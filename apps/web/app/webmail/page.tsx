@@ -1,11 +1,12 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import Link from 'next/link';
+import { FormEvent, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { getAuth } from '@/lib/auth';
 
 export default function WebmailPage() {
-  const [panelToken, setPanelToken] = useState('');
-  const [csrfToken, setCsrfToken] = useState('');
+  const [ready, setReady] = useState(false);
   const [mailbox, setMailbox] = useState('admin@example.com');
   const [password, setPassword] = useState('changeme');
   const [wmToken, setWmToken] = useState('');
@@ -15,13 +16,17 @@ export default function WebmailPage() {
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    setReady(!!getAuth());
+  }, []);
+
   async function createSession(e: FormEvent) {
     e.preventDefault();
     setError('');
     try {
-      const created = await api.createWebmailSession(panelToken, csrfToken, mailbox, password);
+      const created = await api.createWebmailSession(mailbox, password);
       setWmToken(created.token);
-      const inbox = await api.getWebmailMessages(panelToken, created.token, 'INBOX');
+      const inbox = await api.getWebmailMessages(created.token, 'INBOX');
       setMessages(inbox.messages ?? []);
     } catch (err) {
       setError((err as Error).message);
@@ -32,7 +37,7 @@ export default function WebmailPage() {
     e.preventDefault();
     setError('');
     try {
-      await api.sendWebmailMessage(panelToken, csrfToken, wmToken, to, subject, body);
+      await api.sendWebmailMessage(wmToken, to, subject, body);
       setTo('');
       setSubject('');
       setBody('');
@@ -46,14 +51,18 @@ export default function WebmailPage() {
       <h1>Custom Webmail</h1>
       <p>IMAP/SMTP proxy-backed mailbox UI for Nebula Panel.</p>
 
+      {!ready && (
+        <p className="top-gap">
+          You must <Link href="/login">log in</Link> first so Nebula can authorize webmail actions.
+        </p>
+      )}
+
       <div className="grid two">
         <form onSubmit={createSession} className="stack">
           <h2>Session</h2>
-          <input value={panelToken} onChange={(e) => setPanelToken(e.target.value)} placeholder="Panel session token" />
-          <input value={csrfToken} onChange={(e) => setCsrfToken(e.target.value)} placeholder="CSRF token" />
           <input value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder="Mailbox" />
           <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mailbox password" />
-          <button className="btn btn-primary" type="submit">Open Inbox</button>
+          <button className="btn btn-primary" type="submit" disabled={!ready}>Open Inbox</button>
           {wmToken && <code>{wmToken}</code>}
         </form>
 
@@ -62,7 +71,7 @@ export default function WebmailPage() {
           <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="To" />
           <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" />
           <textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Message body" rows={7} />
-          <button className="btn btn-secondary" type="submit">Send</button>
+          <button className="btn btn-secondary" type="submit" disabled={!ready || !wmToken}>Send</button>
         </form>
       </div>
 

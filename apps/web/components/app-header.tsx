@@ -1,5 +1,12 @@
+'use client';
+
 import Image from 'next/image';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+
+import { api } from '@/lib/api';
+import { clearAuth, getAuth } from '@/lib/auth';
 
 const links = [
   { href: '/', label: 'Dashboard' },
@@ -10,11 +17,29 @@ const links = [
   { href: '/files', label: 'Files' },
   { href: '/webmail', label: 'Webmail' },
   { href: '/backups', label: 'Backups' },
-  { href: '/jobs', label: 'Jobs' },
-  { href: '/login', label: 'Login' }
+  { href: '/jobs', label: 'Jobs' }
 ];
 
 export function AppHeader() {
+  const router = useRouter();
+  const [authed, setAuthed] = useState(false);
+
+  useEffect(() => {
+    setAuthed(!!getAuth());
+  }, []);
+
+  async function onLogout() {
+    try {
+      await api.logout();
+    } catch {
+      // best-effort logout; we still clear local state
+    }
+    clearAuth();
+    setAuthed(false);
+    router.push('/login');
+    router.refresh();
+  }
+
   return (
     <header className="app-header">
       <Link href="/" className="brand" aria-label="Nebula Panel Home">
@@ -31,6 +56,13 @@ export function AppHeader() {
             {link.label}
           </Link>
         ))}
+        {authed ? (
+          <button type="button" onClick={onLogout}>
+            Logout
+          </button>
+        ) : (
+          <Link href="/login">Login</Link>
+        )}
       </nav>
     </header>
   );
