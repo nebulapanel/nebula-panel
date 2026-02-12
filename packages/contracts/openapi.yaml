@@ -1,0 +1,419 @@
+openapi: 3.0.3
+info:
+  title: Nebula Panel API
+  version: 1.0.0
+  description: REST API contract for Nebula Panel V1.
+servers:
+  - url: /v1
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200': {description: OK}
+        '401': {description: Unauthorized}
+  /auth/totp/verify:
+    post:
+      tags: [Auth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TOTPVerifyRequest'
+      responses:
+        '200': {description: OK}
+        '401': {description: Unauthorized}
+  /auth/logout:
+    post:
+      tags: [Auth]
+      responses:
+        '204': {description: No Content}
+
+  /users:
+    post:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateUserRequest'}
+      responses:
+        '201': {description: Created}
+    get:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /users/{id}:
+    patch:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+    delete:
+      tags: [Users]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: No Content}
+
+  /sites:
+    post:
+      tags: [Sites]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateSiteRequest'}
+      responses:
+        '201': {description: Created}
+  /sites/{id}:
+    get:
+      tags: [Sites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+    delete:
+      tags: [Sites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
+
+  /sites/{id}/databases:
+    post:
+      tags: [Databases]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '201': {description: Created}
+  /databases/{id}:
+    delete:
+      tags: [Databases]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: No Content}
+
+  /sites/{id}/ssl/issue:
+    post:
+      tags: [SSL]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
+  /sites/{id}/ssl/renew:
+    post:
+      tags: [SSL]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
+  /sites/{id}/ssl/status:
+    get:
+      tags: [SSL]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+
+  /dns/zones:
+    post:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [zone]
+              properties:
+                zone: {type: string}
+      responses:
+        '201': {description: Created}
+  /dns/zones/{zone}:
+    get:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: zone
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /dns/zones/{zone}/records:
+    put:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: zone
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /dns/zones/{zone}/records/{id}:
+    delete:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: zone
+          required: true
+          schema: {type: string}
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+
+  /files/tree:
+    get:
+      tags: [Files]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /files/upload:
+    post:
+      tags: [Files]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': {description: Created}
+  /files/mkdir:
+    post:
+      tags: [Files]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': {description: Created}
+  /files/chmod:
+    patch:
+      tags: [Files]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /files:
+    delete:
+      tags: [Files]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': {description: No Content}
+
+  /mail/domains:
+    post:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: {type: string}
+      responses:
+        '201': {description: Created}
+  /mail/domains/{domain}/mailboxes:
+    post:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: domain
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [local_part]
+              properties:
+                local_part: {type: string}
+                password: {type: string}
+                quota_mb: {type: integer}
+      responses:
+        '201': {description: Created}
+  /mail/aliases:
+    post:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain, source, destination]
+              properties:
+                domain: {type: string}
+                source: {type: string}
+                destination: {type: string}
+      responses:
+        '201': {description: Created}
+  /mail/mailboxes/{id}:
+    delete:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+
+  /webmail/session:
+    post:
+      tags: [Webmail]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': {description: Created}
+  /webmail/folders:
+    get:
+      tags: [Webmail]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /webmail/messages:
+    get:
+      tags: [Webmail]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /webmail/messages/send:
+    post:
+      tags: [Webmail]
+      operationId: sendWebmailMessage
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': {description: Created}
+
+  /backups/run:
+    post:
+      tags: [Backups]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '202': {description: Accepted}
+  /backups:
+    get:
+      tags: [Backups]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /backups/{id}/restore:
+    post:
+      tags: [Backups]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
+
+  /jobs/{id}:
+    get:
+      tags: [Jobs]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /audit-logs:
+    get:
+      tags: [Audit]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: UUID
+  schemas:
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string}
+    TOTPVerifyRequest:
+      type: object
+      required: [preauth_token, code]
+      properties:
+        preauth_token: {type: string}
+        code: {type: string}
+    CreateUserRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string}
+        role:
+          type: string
+          enum: [admin, user]
+    CreateSiteRequest:
+      type: object
+      required: [name, domain, owner_id]
+      properties:
+        name: {type: string}
+        domain: {type: string}
+        owner_id: {type: string}

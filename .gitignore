@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Node
+node_modules/
+.next/
+out/
+
+# Go
+bin/
+*.test
+*.out
+coverage.out
+
+# Env/secrets
+.env
+.env.*
+!/env.example
+/etc/nebula-panel/secrets.env
+
+# Build/cache
+.tmp/
+dist/
+coverage/
+
+# IDE
+.vscode/
+.idea/

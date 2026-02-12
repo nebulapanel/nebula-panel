@@ -1,0 +1,11 @@
+myhostname = mail.local
+myorigin = /etc/mailname
+mydestination = localhost
+inet_interfaces = all
+inet_protocols = all
+smtpd_tls_cert_file = /etc/letsencrypt/live/mail.local/fullchain.pem
+smtpd_tls_key_file = /etc/letsencrypt/live/mail.local/privkey.pem
+smtpd_use_tls = yes
+smtpd_tls_security_level = may
+smtp_tls_security_level = may
+home_mailbox = Maildir/

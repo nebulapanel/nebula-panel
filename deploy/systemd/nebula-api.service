@@ -1,0 +1,17 @@
+[Unit]
+Description=Nebula Panel API
+After=network.target nebula-agent.service
+Requires=nebula-agent.service
+
+[Service]
+Type=simple
+User=nebula
+Group=nebula
+EnvironmentFile=/etc/nebula-panel/secrets.env
+ExecStart=/usr/local/bin/nebula-api
+Restart=always
+RestartSec=3
+WorkingDirectory=/var/lib/nebula-panel
+
+[Install]
+WantedBy=multi-user.target

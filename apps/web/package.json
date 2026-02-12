@@ -1,0 +1,24 @@
+{
+  "name": "nebula-panel-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.25",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.10",
+    "@types/react": "18.3.14",
+    "@types/react-dom": "18.3.4",
+    "eslint": "8.57.1",
+    "eslint-config-next": "14.2.25",
+    "typescript": "5.7.2"
+  }
+}
