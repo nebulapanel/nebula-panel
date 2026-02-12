@@ -1,96 +1,136 @@
 # Nebula Panel Deployment Guide
 
-## 1) Local Build
+## 1) VPS Requirements
 
-```bash
-cd /Users/ayaan/Downloads/Nebula
-make dev-up
-make migrate
-make test
-make build
-```
-
-## 2) Server Requirements
-
-- Ubuntu 22.04 or 24.04
-- Root SSH access
+- Ubuntu `22.04` or `24.04`
+- Root SSH access (or sudo user)
 - Static public IP
 - Open ports: `22, 80, 443, 25, 465, 587, 143, 993, 53/tcp, 53/udp`
 
-## 3) Install on VPS
+## 2) Fast Install (One Command)
 
-Copy repo to server, then run:
+On a fresh Ubuntu VPS:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+```
+
+This script:
+- Clones source into `/opt/src/Nebula`
+- Installs required packages
+- Installs modern Go if needed
+- Builds Nebula binaries
+- Runs `deploy/install.sh`
+
+## 3) Manual Install (Alternative)
+
+```bash
+git clone https://github.com/nebulapanel/nebula-panel.git /opt/src/Nebula
 cd /opt/src/Nebula
 sudo bash deploy/install.sh
 ```
 
-Installer actions include PostgreSQL role/database creation and applying all SQL migrations in `apps/api/migrations`.
+`deploy/install.sh` now builds binaries automatically on server, so separate `make build` is not required for production install.
 
-## 4) Configure Secrets
+## 4) Post-Install Required Changes
 
-Edit `/etc/nebula-panel/secrets.env`:
+Edit:
 
-- Set strong `NEBULA_ADMIN_PASSWORD`
-- Set `NEBULA_ADMIN_TOTP_CODE`
-- Set `NEBULA_DATABASE_URL` if your DB host differs
-- Set `NEBULA_PDNS_API_KEY`
-- Set `NEBULA_ACME_EMAIL`
-- Set ZeroSSL EAB values if using fallback (`NEBULA_ZEROSSL_EAB_KID`, `NEBULA_ZEROSSL_EAB_HMAC_KEY`)
-- Set `NEXT_PUBLIC_NEBULA_API_URL` to `/v1` (recommended behind Nebula web rewrite)
+```bash
+sudo nano /etc/nebula-panel/secrets.env
+```
 
-Then restart:
+Set at minimum:
+- `NEBULA_ADMIN_EMAIL`
+- `NEBULA_ADMIN_PASSWORD`
+- `NEBULA_ADMIN_TOTP_CODE` (do not keep `000000`)
+- `NEBULA_ACME_EMAIL`
+- `NEBULA_PDNS_API_KEY`
+- `NEBULA_ZEROSSL_EAB_KID` and `NEBULA_ZEROSSL_EAB_HMAC_KEY` (if using ZeroSSL fallback)
+
+Restart services:
 
 ```bash
 sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx
 ```
 
-## 5) DNS + SSL
+Validate:
 
-- Create glue records for `ns1.<your-domain>` and `ns2.<your-domain>` to VPS IP.
-- Update `/etc/nginx/sites-available/nebula-panel.conf` `server_name`.
-- Run cert issuance once domain resolves:
+```bash
+curl -s http://127.0.0.1:8080/healthz
+sudo bash /opt/src/Nebula/scripts/verify-stack.sh
+```
+
+## 5) DNS + SSL Go-Live
+
+- Create glue records:
+  - `ns1.your-domain.com` -> VPS IP
+  - `ns2.your-domain.com` -> VPS IP
+- Update `server_name` in `/etc/nginx/sites-available/nebula-panel.conf`
+- Reload Nginx:
+  - `sudo systemctl reload nginx`
+- Issue panel certificate (optional for panel hostname):
 
 ```bash
 sudo certbot --nginx -d panel.your-domain.com
 ```
 
-## 6) Smoke Validation
-
-```bash
-curl -s http://127.0.0.1:8080/healthz
-sudo bash scripts/verify-stack.sh
-```
-
-## 7) Upgrade
+## 6) Upgrade Existing Install
 
 ```bash
 cd /opt/src/Nebula
-make build
+git pull --ff-only
 sudo bash deploy/upgrade.sh
 ```
 
-## 8) GitHub Actions Auto Deploy (Main Branch)
+`deploy/upgrade.sh` now builds binaries automatically before upgrade.
 
-Repository workflow: `/Users/ayaan/Downloads/Nebula/.github/workflows/deploy.yml`
+## 7) GitHub Actions Auto Deploy
 
-Behavior:
-- Triggers automatically after `ci` succeeds on `main`.
-- Also supports manual run from Actions tab (`workflow_dispatch`).
-- Builds Linux binaries in GitHub Actions, uploads release to VPS, then runs:
-  - `deploy/install.sh` on first install (or when forced)
-  - `deploy/upgrade.sh` on existing installations
+Workflow file:
+- `.github/workflows/deploy.yml`
 
-Required GitHub repository secrets:
-- `VPS_HOST`: server IP or hostname
-- `VPS_USER`: SSH user (must have passwordless `sudo` for deploy commands, or be root)
-- `VPS_SSH_KEY`: private key for the deploy user
-- `VPS_PORT`: optional (defaults to `22`)
-- `VPS_DEPLOY_DIR`: optional source sync directory on VPS (defaults to `/opt/src/Nebula`)
-- `VPS_GOARCH`: optional target architecture for Go binaries (`amd64` or `arm64`, defaults to `amd64`)
+How it behaves:
+1. `ci` runs on push/PR.
+2. If CI succeeds on `main` push, `deploy` auto-runs.
+3. `deploy` builds Linux binaries, uploads release archive to VPS, and runs install/upgrade remotely.
+4. If required secrets are not configured:
+   - auto-triggered deploy is skipped with a notice (not a hard failure)
+   - manual deploy fails with a clear missing-secrets message
 
-Recommended one-time VPS prep:
+### Required Secrets
+
+Add in GitHub: `Settings -> Secrets and variables -> Actions`
+
+| Secret | Required | Example | Purpose |
+|---|---|---|---|
+| `VPS_HOST` | yes | `203.0.113.10` | VPS SSH host/IP |
+| `VPS_USER` | yes | `nebula-deploy` | SSH user used by Actions |
+| `VPS_SSH_KEY` | yes | multi-line private key | Private key matching VPS authorized key |
+| `VPS_PORT` | no | `22` | SSH port |
+| `VPS_DEPLOY_DIR` | no | `/opt/src/Nebula` | Directory where release archive is extracted |
+| `VPS_GOARCH` | no | `amd64` or `arm64` | Target Linux binary arch for Go build |
+
+Choose `VPS_GOARCH`:
+
+```bash
+uname -m
+```
+
+- If output is `x86_64` -> use `amd64`
+- If output is `aarch64` or `arm64` -> use `arm64`
+
+### One-Time SSH Setup for Actions
+
+On your local machine:
+
+```bash
+ssh-keygen -t ed25519 -C "nebula-github-actions" -f ~/.ssh/nebula_actions -N ""
+cat ~/.ssh/nebula_actions.pub
+```
+
+On VPS (as root/sudo):
+
 ```bash
 sudo adduser --disabled-password --gecos "" nebula-deploy
 sudo usermod -aG sudo nebula-deploy
@@ -100,15 +140,44 @@ sudo mkdir -p /home/nebula-deploy/.ssh
 sudo chmod 700 /home/nebula-deploy/.ssh
 ```
 
-Then add your deploy public key:
+Paste the public key into:
+
 ```bash
 sudo tee -a /home/nebula-deploy/.ssh/authorized_keys >/dev/null
 sudo chown -R nebula-deploy:nebula-deploy /home/nebula-deploy/.ssh
 sudo chmod 600 /home/nebula-deploy/.ssh/authorized_keys
 ```
 
-First deployment flow:
-1. Add secrets in GitHub: Settings -> Secrets and variables -> Actions.
-2. Open Actions -> `deploy` -> Run workflow.
-3. Set `force_install=true` for the first run.
-4. After first install, keep `force_install=false` (default) for upgrade runs.
+Add private key to GitHub secret `VPS_SSH_KEY`:
+
+```bash
+cat ~/.ssh/nebula_actions
+```
+
+Copy full key text including:
+- `-----BEGIN OPENSSH PRIVATE KEY-----`
+- `-----END OPENSSH PRIVATE KEY-----`
+
+## 8) First GitHub Deploy Run
+
+1. Push latest `main`.
+2. Open `Actions -> deploy -> Run workflow`.
+3. Set `force_install=true` for first run.
+4. Later runs should keep `force_install=false` (default).
+
+## 9) Troubleshooting
+
+Check workflow logs:
+- GitHub Actions -> `deploy` run -> failed step details
+
+Check server logs:
+
+```bash
+sudo journalctl -u nebula-agent -u nebula-api -u nebula-worker -u nebula-web -n 200 --no-pager
+```
+
+Check service status:
+
+```bash
+sudo systemctl status nebula-agent nebula-api nebula-worker nebula-web --no-pager
+```

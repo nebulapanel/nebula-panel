@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import Image from 'next/image';
 import { api } from '@/lib/api';
 
 export default function LoginPage() {
@@ -42,8 +43,13 @@ export default function LoginPage() {
 
   return (
     <section className="panel narrow">
-      <h1>Admin Login</h1>
-      <p>Use TOTP after password for admin sessions.</p>
+      <div className="login-brand">
+        <Image src="/nebula-logo.png" alt="Nebula Panel" width={72} height={72} priority />
+        <div>
+          <h1>Admin Login</h1>
+          <p>Use TOTP after password for admin sessions.</p>
+        </div>
+      </div>
       <form onSubmit={onLogin} className="stack">
         <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" />
         <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" type="password" />

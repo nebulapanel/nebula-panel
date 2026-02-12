@@ -13,7 +13,7 @@ Nebula Panel is a single-server hosting control panel with web, DNS, SSL, files,
 
 ## Quick Start (Local)
 
-1. Install Go 1.22+, Node 20+, pnpm, Docker.
+1. Install Go 1.22+, Node 20+, Docker.
 2. Start dev dependencies:
    - `make dev-up`
 3. Apply database migrations:
@@ -27,9 +27,27 @@ Nebula Panel is a single-server hosting control panel with web, DNS, SSL, files,
    - `make run-worker`
    - `make run-web`
 
-## Production Install
+## Production Install (Ubuntu, one command)
 
-Use `deploy/install.sh` on a fresh Ubuntu 22 VPS.
+Use this on a fresh Ubuntu 22.04/24.04 VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+```
+
+What it does:
+- Clones Nebula source to `/opt/src/Nebula`
+- Installs dependencies (Nginx, PostgreSQL, MariaDB, Redis, PowerDNS, Postfix, Dovecot, OpenDKIM, Fail2ban, Node)
+- Ensures modern Go toolchain is installed
+- Builds Nebula binaries on the server
+- Runs `deploy/install.sh`
+
+After install:
+1. Edit `/etc/nebula-panel/secrets.env`
+2. Restart services:
+   - `sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx`
+3. Verify:
+   - `curl -s http://127.0.0.1:8080/healthz`
 
 ## Operations Docs
 

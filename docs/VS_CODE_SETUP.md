@@ -64,8 +64,13 @@ This generates:
 
 ## 6. Deploy to Ubuntu VPS
 
-1. Copy repository to server.
-2. Run installer:
+1. Recommended one-command installer from GitHub:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+```
+
+2. Manual alternative (if repo already exists on server):
 
 ```bash
 sudo bash deploy/install.sh

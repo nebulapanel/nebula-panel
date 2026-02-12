@@ -25,6 +25,7 @@ jobs:
       (github.event_name == 'workflow_dispatch') ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment: production
@@ -39,17 +40,50 @@ jobs:
             echo "sha=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
           fi
 
+      - name: Validate deploy secrets
+        id: validate
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${VPS_HOST}" ]] || missing+=("VPS_HOST")
+          [[ -n "${VPS_USER}" ]] || missing+=("VPS_USER")
+          [[ -n "${VPS_SSH_KEY}" ]] || missing+=("VPS_SSH_KEY")
+
+          if (( ${#missing[@]} > 0 )); then
+            joined="$(IFS=,; echo "${missing[*]}")"
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+            echo "missing=${joined}" >> "${GITHUB_OUTPUT}"
+
+            if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              echo "::error::Missing required repo secrets: ${joined}"
+              echo "Add secrets in Settings -> Secrets and variables -> Actions."
+              exit 1
+            fi
+
+            echo "::notice::Skipping deploy because required secrets are missing: ${joined}"
+            exit 0
+          fi
+
+          echo "ready=true" >> "${GITHUB_OUTPUT}"
+
       - name: Checkout
+        if: steps.validate.outputs.ready == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.ref.outputs.sha }}
 
       - name: Set up Go
+        if: steps.validate.outputs.ready == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
 
       - name: Build Linux binaries
+        if: steps.validate.outputs.ready == 'true'
         env:
           TARGET_GOARCH: ${{ secrets.VPS_GOARCH }}
         run: |
@@ -60,6 +94,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH="${GOARCH}" go build -o bin/nebula-worker ./apps/worker/cmd/worker
 
       - name: Prepare release archive
+        if: steps.validate.outputs.ready == 'true'
         run: |
           set -euo pipefail
           tar \
@@ -69,14 +104,13 @@ jobs:
             -czf nebula-release.tgz .
 
       - name: Configure SSH
+        if: steps.validate.outputs.ready == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
           set -euo pipefail
-          [[ -n "${VPS_HOST}" ]] || { echo "Missing secret: VPS_HOST"; exit 1; }
-          [[ -n "${VPS_SSH_KEY}" ]] || { echo "Missing secret: VPS_SSH_KEY"; exit 1; }
           PORT="${VPS_PORT:-22}"
 
           mkdir -p "${HOME}/.ssh"
@@ -87,17 +121,18 @@ jobs:
           chmod 600 "${HOME}/.ssh/known_hosts"
 
       - name: Upload release
+        if: steps.validate.outputs.ready == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT }}
         run: |
           set -euo pipefail
-          [[ -n "${VPS_USER}" ]] || { echo "Missing secret: VPS_USER"; exit 1; }
           PORT="${VPS_PORT:-22}"
           scp -P "${PORT}" nebula-release.tgz "${VPS_USER}@${VPS_HOST}:/tmp/nebula-release.tgz"
 
       - name: Deploy on server
+        if: steps.validate.outputs.ready == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
