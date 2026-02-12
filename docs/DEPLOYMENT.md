@@ -70,3 +70,45 @@ cd /opt/src/Nebula
 make build
 sudo bash deploy/upgrade.sh
 ```
+
+## 8) GitHub Actions Auto Deploy (Main Branch)
+
+Repository workflow: `/Users/ayaan/Downloads/Nebula/.github/workflows/deploy.yml`
+
+Behavior:
+- Triggers automatically after `ci` succeeds on `main`.
+- Also supports manual run from Actions tab (`workflow_dispatch`).
+- Builds Linux binaries in GitHub Actions, uploads release to VPS, then runs:
+  - `deploy/install.sh` on first install (or when forced)
+  - `deploy/upgrade.sh` on existing installations
+
+Required GitHub repository secrets:
+- `VPS_HOST`: server IP or hostname
+- `VPS_USER`: SSH user (must have passwordless `sudo` for deploy commands, or be root)
+- `VPS_SSH_KEY`: private key for the deploy user
+- `VPS_PORT`: optional (defaults to `22`)
+- `VPS_DEPLOY_DIR`: optional source sync directory on VPS (defaults to `/opt/src/Nebula`)
+- `VPS_GOARCH`: optional target architecture for Go binaries (`amd64` or `arm64`, defaults to `amd64`)
+
+Recommended one-time VPS prep:
+```bash
+sudo adduser --disabled-password --gecos "" nebula-deploy
+sudo usermod -aG sudo nebula-deploy
+echo "nebula-deploy ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/nebula-deploy
+sudo chmod 440 /etc/sudoers.d/nebula-deploy
+sudo mkdir -p /home/nebula-deploy/.ssh
+sudo chmod 700 /home/nebula-deploy/.ssh
+```
+
+Then add your deploy public key:
+```bash
+sudo tee -a /home/nebula-deploy/.ssh/authorized_keys >/dev/null
+sudo chown -R nebula-deploy:nebula-deploy /home/nebula-deploy/.ssh
+sudo chmod 600 /home/nebula-deploy/.ssh/authorized_keys
+```
+
+First deployment flow:
+1. Add secrets in GitHub: Settings -> Secrets and variables -> Actions.
+2. Open Actions -> `deploy` -> Run workflow.
+3. Set `force_install=true` for the first run.
+4. After first install, keep `force_install=false` (default) for upgrade runs.
