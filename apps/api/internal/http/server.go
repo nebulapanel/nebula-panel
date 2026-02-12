@@ -16,12 +16,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/nebula-panel/nebula/apps/api/internal/buildinfo"
 	"github.com/nebula-panel/nebula/apps/api/internal/config"
 	apimw "github.com/nebula-panel/nebula/apps/api/internal/middleware"
 	"github.com/nebula-panel/nebula/apps/api/internal/models"
 	"github.com/nebula-panel/nebula/apps/api/internal/security"
 	"github.com/nebula-panel/nebula/apps/api/internal/store"
 	"github.com/nebula-panel/nebula/packages/lib/validate"
+	"github.com/pquerna/otp/totp"
 )
 
 type Server struct {
@@ -45,6 +47,7 @@ func (s *Server) Router() http.Handler {
 	})
 
 	r.Route("/v1", func(r chi.Router) {
+		r.Get("/version", s.handleVersion)
 		r.Post("/auth/login", s.handleLogin)
 		r.Post("/auth/totp/verify", s.handleTOTPVerify)
 		r.Post("/auth/logout", s.handleLogout)
@@ -54,6 +57,10 @@ func (s *Server) Router() http.Handler {
 			r.Use(s.csrfMiddleware)
 
 			r.Get("/auth/me", s.handleAuthMe)
+			r.Get("/auth/totp/status", s.handleTOTPStatus)
+			r.Post("/auth/totp/enroll/start", s.handleTOTPEnrollStart)
+			r.Post("/auth/totp/enroll/verify", s.handleTOTPEnrollVerify)
+			r.Post("/auth/totp/disable", s.handleTOTPDisable)
 
 			r.Post("/users", s.handleCreateUser)
 			r.Get("/users", s.handleListUsers)
@@ -75,9 +82,11 @@ func (s *Server) Router() http.Handler {
 			r.Get("/sites/{id}/ssl/status", s.handleSSLStatus)
 
 			r.Post("/dns/zones", s.handleCreateZone)
+			r.Get("/dns/zones", s.handleListZones)
 			r.Get("/dns/zones/{zone}", s.handleGetZone)
 			r.Put("/dns/zones/{zone}/records", s.handleReplaceZoneRecords)
 			r.Delete("/dns/zones/{zone}/records/{id}", s.handleDeleteZoneRecord)
+			r.Delete("/dns/zones/{zone}", s.handleDeleteZone)
 
 			r.Get("/files/tree", s.handleFilesTree)
 			r.Post("/files/upload", s.handleFileUpload)
@@ -85,19 +94,25 @@ func (s *Server) Router() http.Handler {
 			r.Patch("/files/chmod", s.handleFileChmod)
 			r.Delete("/files", s.handleFileDelete)
 
-			r.Post("/mail/domains", s.handleCreateMailDomain)
-			r.Post("/mail/domains/{domain}/mailboxes", s.handleCreateMailbox)
-			r.Post("/mail/aliases", s.handleCreateAlias)
-			r.Delete("/mail/mailboxes/{id}", s.handleDeleteMailbox)
+				r.Post("/mail/domains", s.handleCreateMailDomain)
+				r.Get("/mail/domains", s.handleListMailDomains)
+				r.Post("/mail/domains/{domain}/mailboxes", s.handleCreateMailbox)
+				r.Get("/mail/domains/{domain}/mailboxes", s.handleListMailboxes)
+				r.Get("/mail/domains/{domain}/dns-auth", s.handleMailDNSAuth)
+				r.Post("/mail/aliases", s.handleCreateAlias)
+				r.Get("/mail/aliases", s.handleListAliases)
+				r.Delete("/mail/aliases/{id}", s.handleDeleteAlias)
+				r.Delete("/mail/mailboxes/{id}", s.handleDeleteMailbox)
 
 			r.Post("/webmail/session", s.handleCreateWebmailSession)
 			r.Get("/webmail/folders", s.handleWebmailFolders)
 			r.Get("/webmail/messages", s.handleWebmailMessages)
 			r.Post("/webmail/messages/send", s.handleWebmailSend)
 
-			r.Post("/backups/run", s.handleBackupRun)
-			r.Get("/backups", s.handleBackupList)
-			r.Post("/backups/{id}/restore", s.handleBackupRestore)
+				r.Post("/backups/run", s.handleBackupRun)
+				r.Get("/backups", s.handleBackupList)
+				r.Get("/backups/{id}", s.handleBackupGet)
+				r.Post("/backups/{id}/restore", s.handleBackupRestore)
 
 			r.Get("/jobs", s.handleListJobs)
 			r.Get("/jobs/{id}", s.handleGetJob)
@@ -107,6 +122,14 @@ func (s *Server) Router() http.Handler {
 	})
 
 	return r
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":    buildinfo.Version,
+		"git_sha":    buildinfo.GitSHA,
+		"build_time": buildinfo.BuildTime,
+	})
 }
 
 func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
@@ -129,18 +152,63 @@ func (s *Server) csrfMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) setCSRFCookie(w http.ResponseWriter) string {
+func isHTTPSRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+func (s *Server) setCSRFCookie(w http.ResponseWriter, r *http.Request) string {
 	v := uuid.NewString()
 	http.SetCookie(w, &http.Cookie{
 		Name:     "nebula_csrf",
 		Value:    v,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteStrictMode,
+		Secure:   isHTTPSRequest(r),
+		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(24 * time.Hour),
 	})
 	return v
+}
+
+func (s *Server) clearCSRFCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "nebula_csrf",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPSRequest(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
+}
+
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, sess models.Session) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "nebula_session",
+		Value:    sess.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPSRequest(r),
+		SameSite: http.SameSiteLaxMode,
+		Expires:  sess.ExpiresAt,
+	})
+}
+
+func (s *Server) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "nebula_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   isHTTPSRequest(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
 }
 
 func (s *Server) currentSession(r *http.Request) (models.Session, error) {
@@ -180,8 +248,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	csrf := s.setCSRFCookie(w)
-	if u.Role == models.RoleAdmin {
+	csrf := s.setCSRFCookie(w, r)
+	if _, enabled, ok := s.st.GetTOTPSecret(u.ID); ok && enabled {
 		preauth := s.st.CreatePreAuth(u.ID)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"totp_required": true,
@@ -196,6 +264,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.setSessionCookie(w, r, sess)
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "csrf_token": csrf})
 }
 
@@ -208,21 +277,29 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if req.Code != s.cfg.AdminTOTPCode {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid totp code"})
-		return
-	}
 	uid, ok := s.st.ConsumePreAuth(req.PreAuthToken)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid preauth token"})
 		return
 	}
+
+	secret, enabled, ok := s.st.GetTOTPSecret(uid)
+	if !ok || !enabled {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "totp not enabled"})
+		return
+	}
+	if !totp.Validate(strings.TrimSpace(req.Code), secret) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid totp code"})
+		return
+	}
+
 	sess, err := s.st.CreateSession(uid)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	csrf := s.setCSRFCookie(w)
+	s.setSessionCookie(w, r, sess)
+	csrf := s.setCSRFCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "csrf_token": csrf})
 }
 
@@ -231,9 +308,17 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SessionToken string `json:"session_token"`
 	}
 	_ = readJSON(r, &req)
-	if req.SessionToken != "" {
-		s.st.DeleteSession(req.SessionToken)
+	token := strings.TrimSpace(req.SessionToken)
+	if token == "" {
+		if c, err := r.Cookie("nebula_session"); err == nil {
+			token = strings.TrimSpace(c.Value)
+		}
 	}
+	if token != "" {
+		s.st.DeleteSession(token)
+	}
+	s.clearSessionCookie(w, r)
+	s.clearCSRFCookie(w, r)
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
@@ -249,6 +334,112 @@ func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
+}
+
+func (s *Server) handleTOTPStatus(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	st, err := s.st.TOTPStatus(sess.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": st.Enabled})
+}
+
+func (s *Server) handleTOTPEnrollStart(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	u, ok := s.st.GetUser(sess.UserID)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "Nebula Panel",
+		AccountName: u.Email,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	secret := key.Secret()
+	if err := s.st.UpsertTOTPSecret(sess.UserID, secret); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"otpauth_url":    key.URL(),
+		"secret_base32":  secret,
+		"issuer":         "Nebula Panel",
+		"account_name":   u.Email,
+	})
+}
+
+func (s *Server) handleTOTPEnrollVerify(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	secret, _, ok := s.st.GetTOTPSecret(sess.UserID)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "totp not enrolled"})
+		return
+	}
+	if !totp.Validate(strings.TrimSpace(req.Code), secret) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid totp code"})
+		return
+	}
+	if err := s.st.EnableTOTP(sess.UserID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true})
+}
+
+func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	secret, enabled, ok := s.st.GetTOTPSecret(sess.UserID)
+	if !ok || !enabled {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "totp not enabled"})
+		return
+	}
+	if !totp.Validate(strings.TrimSpace(req.Code), secret) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid totp code"})
+		return
+	}
+	if err := s.st.DisableTOTP(sess.UserID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 }
 
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -369,6 +560,9 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	if err := readJSON(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if strings.TrimSpace(req.OwnerID) == "" {
+		req.OwnerID = sess.UserID
 	}
 	site, err := s.st.CreateSite(req.Name, req.Domain, req.OwnerID)
 	if err != nil {
@@ -533,8 +727,9 @@ func (s *Server) handleSSLStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateZone(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.requireAdmin(w, r)
-	if !ok {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
 	var req struct {
@@ -571,10 +766,42 @@ func (s *Server) handleCreateZone(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	z := s.st.CreateZone(zone, records)
+	z, err := s.st.CreateZone(sess.UserID, zone, records)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	job := s.st.CreateJob("dns_apply", zone, "queued")
 	s.st.AddAudit(sess.UserID, "create_dns_zone", zone, "Created DNS zone")
 	writeJSON(w, http.StatusCreated, map[string]any{"zone": z, "job": job})
+}
+
+func (s *Server) handleListZones(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	type zoneResp struct {
+		Zone      string    `json:"zone"`
+		Serial    int64     `json:"serial"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+
+	var zones []models.DNSZone
+	if sess.Role == models.RoleAdmin {
+		zones = s.st.ListZones()
+	} else {
+		zones = s.st.ListZonesForOwner(sess.UserID)
+	}
+
+	out := make([]zoneResp, 0, len(zones))
+	for _, z := range zones {
+		out = append(out, zoneResp{Zone: z.Zone, Serial: z.Serial, CreatedAt: z.CreatedAt})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"zones": out})
 }
 
 func (s *Server) handleGetZone(w http.ResponseWriter, r *http.Request) {
@@ -626,6 +853,29 @@ func (s *Server) handleDeleteZoneRecord(w http.ResponseWriter, r *http.Request) 
 	job := s.st.CreateJob("dns_apply", z.Zone, "queued")
 	s.st.AddAudit(sess.UserID, "delete_dns_record", z.Zone, "Deleted DNS record")
 	writeJSON(w, http.StatusOK, map[string]any{"zone": z, "job": job})
+}
+
+func (s *Server) handleDeleteZone(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	zoneName := chi.URLParam(r, "zone")
+	z, ok := s.st.GetZone(zoneName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "zone not found"})
+		return
+	}
+	if sess.Role != models.RoleAdmin && z.OwnerID != sess.UserID {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "zone not found"})
+		return
+	}
+
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zoneName)), ".")
+	job := s.st.CreateJob("dns_delete", normalized, "queued")
+	s.st.AddAudit(sess.UserID, "delete_dns_zone", normalized, "Deleted DNS zone")
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
 func (s *Server) handleFilesTree(w http.ResponseWriter, r *http.Request) {
@@ -801,7 +1051,7 @@ func (s *Server) handleCreateMailDomain(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "domain is required"})
 		return
 	}
-	domain, err := s.st.CreateMailDomain(req.Domain)
+	domain, err := s.st.CreateMailDomain(sess.UserID, req.Domain)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -809,6 +1059,110 @@ func (s *Server) handleCreateMailDomain(w http.ResponseWriter, r *http.Request) 
 	job := s.st.CreateJob("mail_apply", "mail", "queued")
 	s.st.AddAudit(sess.UserID, "create_mail_domain", req.Domain, "Created mail domain")
 	writeJSON(w, http.StatusCreated, map[string]any{"domain": domain, "job": job})
+}
+
+func (s *Server) handleListMailDomains(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	domains, err := s.st.ListMailDomains()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"domains": domains})
+}
+
+func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "domain")))
+	if domain == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "domain is required"})
+		return
+	}
+	mailboxes, err := s.st.ListMailboxes()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	out := make([]models.Mailbox, 0)
+	for _, mb := range mailboxes {
+		if mb.Domain == domain {
+			out = append(out, mb)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mailboxes": out})
+}
+
+func (s *Server) handleListAliases(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
+	aliases, err := s.st.ListAliases()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if domain == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"aliases": aliases})
+		return
+	}
+	out := make([]models.MailAlias, 0)
+	for _, a := range aliases {
+		if a.Domain == domain {
+			out = append(out, a)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"aliases": out})
+}
+
+func (s *Server) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	if strings.TrimSpace(id) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if err := s.st.DeleteAlias(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	job := s.st.CreateJob("mail_apply", "mail", "queued")
+	s.st.AddAudit(sess.UserID, "delete_alias", id, "Deleted alias")
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
+}
+
+func (s *Server) handleMailDNSAuth(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	domain, err := validate.NormalizeDomain(chi.URLParam(r, "domain"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	mailHost := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.cfg.MailFQDN)), ".")
+	if mailHost == "" {
+		mailHost = "mail." + domain
+	}
+
+	records := make([]map[string]string, 0, 6)
+	if ip := strings.TrimSpace(s.cfg.PublicIPv4); ip != "" {
+		records = append(records, map[string]string{"type": "A", "name": mailHost, "value": ip})
+	}
+	records = append(records, map[string]string{"type": "MX", "name": domain, "value": "10 " + mailHost})
+	records = append(records, map[string]string{"type": "TXT", "name": domain, "value": "v=spf1 mx -all"})
+	records = append(records, map[string]string{"type": "TXT", "name": "_dmarc." + domain, "value": "v=DMARC1; p=none; rua=mailto:" + s.cfg.AdminEmail})
+	records = append(records, map[string]string{"type": "TXT", "name": "s1._domainkey." + domain, "value": "v=DKIM1; k=rsa; p=REPLACE_WITH_PUBLIC_KEY"})
+
+	writeJSON(w, http.StatusOK, map[string]any{"records": records})
 }
 
 func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
@@ -974,6 +1328,16 @@ func (s *Server) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBackupList(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": s.st.ListBackups()})
+}
+
+func (s *Server) handleBackupGet(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	b, ok := s.st.GetBackup(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "backup not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
 }
 
 func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {

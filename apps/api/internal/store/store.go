@@ -65,6 +65,10 @@ func (s *Store) bootstrap(ctx context.Context) error {
 		return fmt.Errorf("bootstrap admin lookup: %w", err)
 	}
 
+	if strings.TrimSpace(s.cfg.AdminPassword) == "" {
+		return errors.New("NEBULA_ADMIN_PASSWORD is required for first-time bootstrap")
+	}
+
 	hash, err := bcrypt.GenerateFromPassword([]byte(s.cfg.AdminPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return err

@@ -1,14 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useState } from 'react';
 import { api } from '@/lib/api';
-import { getAuth } from '@/lib/auth';
+import { useAuth } from '@/components/auth-provider';
 
 export default function WebmailPage() {
-  const [ready, setReady] = useState(false);
-  const [mailbox, setMailbox] = useState('admin@example.com');
-  const [password, setPassword] = useState('changeme');
+  const { me } = useAuth();
+  const [mailbox, setMailbox] = useState('');
+  const [password, setPassword] = useState('');
   const [wmToken, setWmToken] = useState('');
   const [messages, setMessages] = useState<Array<{ id: string; subject: string; from: string }>>([]);
   const [to, setTo] = useState('');
@@ -16,9 +16,7 @@ export default function WebmailPage() {
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    setReady(!!getAuth());
-  }, []);
+  const ready = !!me;
 
   async function createSession(e: FormEvent) {
     e.preventDefault();
@@ -63,7 +61,7 @@ export default function WebmailPage() {
           <input value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder="Mailbox" />
           <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mailbox password" />
           <button className="btn btn-primary" type="submit" disabled={!ready}>Open Inbox</button>
-          {wmToken && <code>{wmToken}</code>}
+          {wmToken ? <p className="small">Session active.</p> : null}
         </form>
 
         <form onSubmit={sendMessage} className="stack">

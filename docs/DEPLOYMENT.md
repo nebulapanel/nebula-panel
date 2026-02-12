@@ -12,14 +12,14 @@
 On a fresh Ubuntu VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+curl -fsSL https://github.com/nebulapanel/nebula-panel/releases/latest/download/get.sh | sudo bash
 ```
 
 This script:
-- Clones source into `/opt/src/Nebula`
+- Downloads the latest release archive and verifies SHA256
+- Extracts source into `/opt/src/Nebula`
 - Installs required packages
-- Installs modern Go if needed
-- Builds Nebula binaries
+- Uses prebuilt Linux binaries from the release (no Go toolchain required on the VPS)
 - Runs `deploy/install.sh`
 
 ## 3) Manual Install (Alternative)
@@ -34,37 +34,18 @@ sudo bash deploy/install.sh
 
 ## 4) Post-Install Required Changes
 
-Edit:
-
-```bash
-sudo nano /etc/nebula-panel/secrets.env
-```
-
-Set at minimum:
-- `NEBULA_ADMIN_EMAIL`
-- `NEBULA_ADMIN_PASSWORD`
-- `NEBULA_ADMIN_TOTP_CODE` (do not keep `000000`)
-- `NEBULA_ACME_EMAIL`
-- `NEBULA_PDNS_API_KEY`
-- `NEBULA_APP_KEY` (32-byte hex or base64; used to encrypt secrets at rest)
-- `NEBULA_ZEROSSL_EAB_KID` and `NEBULA_ZEROSSL_EAB_HMAC_KEY` (if using ZeroSSL fallback)
-
-Recommended for DNS hosting:
-- `NEBULA_NS1_FQDN`, `NEBULA_NS2_FQDN` (your global nameservers)
-- `NEBULA_PUBLIC_IPV4` (auto-detected on install; used to seed nameserver A records when applicable)
-
-Restart services:
-
-```bash
-sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx
-```
+The installer prompts for the required values (admin email/password, ACME email, etc) and writes `/etc/nebula-panel/secrets.env` automatically.
 
 Validate:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz
-sudo bash /opt/src/Nebula/scripts/verify-stack.sh
+sudo systemctl status nebula-agent nebula-api nebula-worker nebula-web --no-pager
 ```
+
+Optional configuration (advanced):
+- `/etc/nebula-panel/secrets.env` contains everything (PowerDNS key, app key, ZeroSSL EAB values, etc).
+- Google Authenticator (TOTP) is optional and can be enabled after login in `Settings -> Security`.
 
 Provisioning model (important):
 - The API enqueues jobs in Postgres (`queued`)

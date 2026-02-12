@@ -202,6 +202,20 @@ func (r *Runner) executeJob(ctx context.Context, j store.Job) error {
 			},
 		})
 
+	case "dns_delete":
+		zone := strings.TrimSpace(j.TargetID)
+		if zone == "" {
+			return fmt.Errorf("zone is required")
+		}
+		if err := r.tc.Submit(ctx, tasks.Request{
+			Type:   "dns_delete",
+			Target: zone,
+			Args:   map[string]string{"zone": zone},
+		}); err != nil {
+			return err
+		}
+		return r.st.DeleteZone(ctx, zone)
+
 	case "mail_apply":
 		domains, mailboxes, aliases, err := r.st.MailState(ctx)
 		if err != nil {

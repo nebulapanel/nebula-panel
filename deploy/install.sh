@@ -34,13 +34,109 @@ install_packages() {
     openssh-server \
     nginx php-fpm mariadb-server postgresql redis-server \
     pdns-server pdns-backend-sqlite3 \
-    postfix dovecot-core dovecot-imapd opendkim opendkim-tools \
-    certbot python3-certbot-nginx fail2ban
+    postfix postfix-pcre dovecot-core dovecot-imapd dovecot-lmtpd opendkim opendkim-tools \
+    certbot python3-certbot-nginx fail2ban \
+    restic
 
   if ! command -v node >/dev/null 2>&1 || [[ "$(node -v | sed 's/^v//;s/\..*$//')" -lt 20 ]]; then
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
   fi
+}
+
+have_tty() {
+  [[ -t 0 && -t 1 ]]
+}
+
+prompt_default() {
+  local var="$1"
+  local prompt="$2"
+  local def="$3"
+
+  if [[ -n "${!var:-}" ]]; then
+    return
+  fi
+
+  if ! have_tty; then
+    echo "Missing required env var ${var} for non-interactive install." >&2
+    exit 1
+  fi
+
+  local val
+  read -r -p "${prompt} [${def}]: " val
+  val="${val:-${def}}"
+  export "${var}=${val}"
+}
+
+prompt_optional() {
+  local var="$1"
+  local prompt="$2"
+  local def="$3"
+
+  if [[ -n "${!var:-}" ]]; then
+    return
+  fi
+  if ! have_tty; then
+    export "${var}=${def}"
+    return
+  fi
+
+  local val
+  read -r -p "${prompt} [${def}]: " val
+  val="${val:-${def}}"
+  export "${var}=${val}"
+}
+
+NEBULA_INSTALL_GENERATED_ADMIN_PASSWORD=""
+
+collect_install_config() {
+  if [[ -f "${SECRETS_FILE}" ]]; then
+    return
+  fi
+
+  local host_fqdn
+  host_fqdn="$(hostname -f 2>/dev/null || hostname)"
+  host_fqdn="$(echo "${host_fqdn}" | tr -d '[:space:]')"
+  if [[ -z "${host_fqdn}" ]]; then
+    host_fqdn="localhost"
+  fi
+
+  prompt_default "NEBULA_ADMIN_EMAIL" "Admin email" "admin@${host_fqdn}"
+
+  if [[ -z "${NEBULA_ADMIN_PASSWORD:-}" ]]; then
+    if ! have_tty; then
+      echo "Missing required env var NEBULA_ADMIN_PASSWORD for non-interactive install." >&2
+      exit 1
+    fi
+    local pw1 pw2
+    while true; do
+      read -r -s -p "Admin password (leave empty to generate): " pw1
+      echo
+      if [[ -z "${pw1}" ]]; then
+        pw1="$(openssl rand -base64 18)"
+        NEBULA_INSTALL_GENERATED_ADMIN_PASSWORD="${pw1}"
+        break
+      fi
+      if [[ "${pw1}" =~ [[:space:]] ]]; then
+        echo "Password must not contain spaces." >&2
+        continue
+      fi
+      read -r -s -p "Confirm admin password: " pw2
+      echo
+      if [[ "${pw1}" != "${pw2}" ]]; then
+        echo "Passwords do not match." >&2
+        continue
+      fi
+      break
+    done
+    export NEBULA_ADMIN_PASSWORD="${pw1}"
+  fi
+
+  prompt_optional "NEBULA_ACME_EMAIL" "ACME email" "${NEBULA_ADMIN_EMAIL}"
+  prompt_optional "NEBULA_PANEL_FQDN" "Panel domain (optional, leave blank for IP)" ""
+  prompt_optional "NEBULA_MAIL_FQDN" "Mail hostname (used for MX/TLS)" "${host_fqdn}"
+  prompt_optional "NEBULA_NS1_FQDN" "Global NS1 hostname (optional)" ""
+  prompt_optional "NEBULA_NS2_FQDN" "Global NS2 hostname (optional)" ""
 }
 
 version_ge() {
@@ -100,6 +196,20 @@ build_binaries() {
   )
 }
 
+have_prebuilt_binaries() {
+  [[ -x "${ROOT_DIR}/bin/nebula-api" && -x "${ROOT_DIR}/bin/nebula-agent" && -x "${ROOT_DIR}/bin/nebula-worker" ]]
+}
+
+ensure_binaries() {
+  if have_prebuilt_binaries; then
+    echo "Using prebuilt Nebula binaries from ${ROOT_DIR}/bin"
+    return
+  fi
+  echo "Building Nebula binaries on this server..."
+  ensure_go_toolchain
+  build_binaries
+}
+
 setup_user_dirs() {
   getent group nebula >/dev/null 2>&1 || groupadd --system nebula
   id -u nebula >/dev/null 2>&1 || useradd --system --home /var/lib/nebula-panel --shell /usr/sbin/nologin --gid nebula nebula
@@ -122,6 +232,7 @@ setup_user_dirs() {
 
 setup_secrets() {
   if [[ ! -f "${SECRETS_FILE}" ]]; then
+    collect_install_config
     local db_password
     local pdns_key
     local agent_secret
@@ -141,18 +252,19 @@ NEBULA_APP_KEY=${app_key}
 NEBULA_AGENT_SOCKET=/run/nebula-agent.sock
 NEBULA_AGENT_SHARED_SECRET=${agent_secret}
 NEBULA_AGENT_CMD_TIMEOUT=10m
-NEBULA_ADMIN_EMAIL=admin@localhost
-NEBULA_ADMIN_PASSWORD=$(openssl rand -base64 18)
-NEBULA_ADMIN_TOTP_CODE=000000
-NEBULA_ACME_EMAIL=admin@localhost
+NEBULA_ADMIN_EMAIL=${NEBULA_ADMIN_EMAIL}
+NEBULA_ADMIN_PASSWORD=${NEBULA_ADMIN_PASSWORD}
+NEBULA_ACME_EMAIL=${NEBULA_ACME_EMAIL}
 NEBULA_ACME_WEBROOT=/var/www/nebula-acme
 NEBULA_ZEROSSL_EAB_KID=
 NEBULA_ZEROSSL_EAB_HMAC_KEY=
 NEBULA_PDNS_API_URL=http://127.0.0.1:8081
 NEBULA_PDNS_API_KEY=${pdns_key}
 NEBULA_PDNS_SERVER_ID=localhost
-NEBULA_NS1_FQDN=
-NEBULA_NS2_FQDN=
+NEBULA_PANEL_FQDN=${NEBULA_PANEL_FQDN}
+NEBULA_MAIL_FQDN=${NEBULA_MAIL_FQDN}
+NEBULA_NS1_FQDN=${NEBULA_NS1_FQDN}
+NEBULA_NS2_FQDN=${NEBULA_NS2_FQDN}
 NEBULA_PUBLIC_IPV4=${public_ipv4}
 NEBULA_GENERATED_CONFIG_DIR=/etc/nebula-panel/generated
 NEBULA_SESSION_TTL=12h
@@ -164,7 +276,7 @@ NEXT_PUBLIC_NEBULA_API_URL=/v1
 NEBULA_INTERNAL_API_PROXY=http://127.0.0.1:8080/v1/:path*
 SECRETS
     chmod 600 "${SECRETS_FILE}"
-    echo "Created ${SECRETS_FILE}. Update NEBULA_ADMIN_TOTP_CODE before production use."
+    echo "Created ${SECRETS_FILE}."
   fi
 }
 
@@ -244,6 +356,14 @@ install_templates() {
   install -m 644 "${ROOT_DIR}/deploy/templates/fail2ban-jail.local" /etc/fail2ban/jail.local
 
   source "${SECRETS_FILE}"
+  if [[ -n "${NEBULA_PANEL_FQDN:-}" ]]; then
+    sed -i "s/server_name _;/server_name ${NEBULA_PANEL_FQDN} _;/" /etc/nginx/sites-available/nebula-panel.conf
+  fi
+
+  if [[ -n "${NEBULA_MAIL_FQDN:-}" ]]; then
+    sed -i "s/^myhostname = .*/myhostname = ${NEBULA_MAIL_FQDN}/" /etc/postfix/main.cf
+  fi
+
   sed -i "s#api-key=.*#api-key=${NEBULA_PDNS_API_KEY}#g" /etc/powerdns/pdns.conf
 
   nginx -t
@@ -258,28 +378,72 @@ install_systemd() {
 
   systemctl daemon-reload
   systemctl enable --now nebula-agent.service nebula-api.service nebula-worker.service nebula-web.service
-  systemctl enable --now nginx redis-server postgresql mariadb fail2ban
+  systemctl enable --now nginx redis-server postgresql mariadb fail2ban pdns postfix dovecot opendkim
+}
+
+finalize_install() {
+  source "${SECRETS_FILE}"
+
+  # Wait for API to come up so bootstrap can create the admin.
+  for _ in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+
+  local db_url db_user db_pass db_name
+  db_url="${NEBULA_DATABASE_URL}"
+  db_user="$(echo "${db_url}" | sed -E 's#^postgres://([^:]+):.*#\\1#')"
+  db_pass="$(echo "${db_url}" | sed -E 's#^postgres://[^:]+:([^@]+)@.*#\\1#')"
+  db_name="$(echo "${db_url}" | sed -E 's#.*/([^?]+)\\?.*#\\1#')"
+
+  export PGPASSWORD="${db_pass}"
+  if psql -h 127.0.0.1 -U "${db_user}" -d "${db_name}" -tAc "SELECT 1 FROM users WHERE email='${NEBULA_ADMIN_EMAIL}'" | grep -q 1; then
+    # Remove bootstrap password from disk; it isn't needed after admin exists.
+    sed -i "s/^NEBULA_ADMIN_PASSWORD=.*/NEBULA_ADMIN_PASSWORD=/" "${SECRETS_FILE}"
+    systemctl restart nebula-api >/dev/null 2>&1 || true
+  fi
 }
 
 print_next_steps() {
   cat <<MSG
 Nebula Panel installed.
 
-Next steps:
-1. Edit ${SECRETS_FILE} and set real admin email/password/TOTP.
-2. Open the panel in a browser: http://<your-server-ip>/
-3. (Recommended) Set a real domain by editing /etc/nginx/sites-available/nebula-panel.conf and reloading nginx.
-4. Set NEBULA_PDNS_API_KEY and ACME/ZeroSSL values as needed.
-5. (Optional) Set NEBULA_NS1_FQDN / NEBULA_NS2_FQDN and configure glue if you run your own nameservers.
-6. Restart Nebula services:
-   systemctl restart nebula-agent nebula-api nebula-worker nebula-web
+Open:
+- http://<your-server-ip>/
+
+Login:
+- Email: ${NEBULA_ADMIN_EMAIL}
+MSG
+
+  if [[ -n "${NEBULA_INSTALL_GENERATED_ADMIN_PASSWORD}" ]]; then
+    cat <<MSG
+- Password: ${NEBULA_INSTALL_GENERATED_ADMIN_PASSWORD}
+
+NOTE: The admin password is shown only once. It is not stored in ${SECRETS_FILE}.
+MSG
+  else
+    cat <<MSG
+- Password: (the password you entered during install)
+
+NOTE: The admin password is not stored in ${SECRETS_FILE}.
+MSG
+  fi
+
+  cat <<MSG
+
+2FA:
+- Enable Google Authenticator in: Settings -> Security
+
+Services:
+- systemctl status nebula-agent nebula-api nebula-worker nebula-web --no-pager
 MSG
 }
 
 check_os
 install_packages
-ensure_go_toolchain
-build_binaries
+ensure_binaries
 setup_user_dirs
 setup_secrets
 setup_sftp_jail
@@ -288,4 +452,5 @@ setup_runtime_dirs
 install_code
 install_templates
 install_systemd
+finalize_install
 print_next_steps

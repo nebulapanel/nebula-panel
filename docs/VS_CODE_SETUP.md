@@ -49,7 +49,7 @@ make run-web
 2. Use:
    - Email: `admin@localhost`
    - Password: `admin123!`
-   - TOTP: `000000`
+   - TOTP: not required by default (enable in `Settings -> Security` after login)
 
 ## 5. Production Build Artifacts
 
@@ -67,7 +67,7 @@ This generates:
 1. Recommended one-command installer from GitHub:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+curl -fsSL https://github.com/nebulapanel/nebula-panel/releases/latest/download/get.sh | sudo bash
 ```
 
 2. Manual alternative (if repo already exists on server):
@@ -76,14 +76,13 @@ curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scrip
 sudo bash deploy/install.sh
 ```
 
-3. Edit `/etc/nebula-panel/secrets.env`.
-4. Restart:
+3. Restart:
 
 ```bash
 sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx
 ```
 
-5. Validate:
+4. Validate:
 
 ```bash
 curl -s http://127.0.0.1:8080/healthz

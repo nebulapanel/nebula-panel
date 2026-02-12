@@ -3,12 +3,10 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
 
-import { api } from '@/lib/api';
-import { clearAuth, getAuth } from '@/lib/auth';
+import { useAuth } from '@/components/auth-provider';
 
-const links = [
+const commonLinks = [
   { href: '/', label: 'Dashboard' },
   { href: '/sites', label: 'Sites' },
   { href: '/dns', label: 'DNS' },
@@ -17,25 +15,16 @@ const links = [
   { href: '/files', label: 'Files' },
   { href: '/webmail', label: 'Webmail' },
   { href: '/backups', label: 'Backups' },
-  { href: '/jobs', label: 'Jobs' }
+  { href: '/jobs', label: 'Jobs' },
+  { href: '/settings/security', label: 'Settings' }
 ];
 
 export function AppHeader() {
   const router = useRouter();
-  const [authed, setAuthed] = useState(false);
-
-  useEffect(() => {
-    setAuthed(!!getAuth());
-  }, []);
+  const { me, loading, logout } = useAuth();
 
   async function onLogout() {
-    try {
-      await api.logout();
-    } catch {
-      // best-effort logout; we still clear local state
-    }
-    clearAuth();
-    setAuthed(false);
+    await logout();
     router.push('/login');
     router.refresh();
   }
@@ -51,16 +40,22 @@ export function AppHeader() {
       </Link>
 
       <nav className="top-nav" aria-label="Primary">
-        {links.map((link) => (
+        {(me
+          ? [
+              ...(me.role === 'admin' ? [{ href: '/users', label: 'Users' }] : []),
+              ...commonLinks
+            ]
+          : [{ href: '/', label: 'Dashboard' }]
+        ).map((link) => (
           <Link key={link.href} href={link.href}>
             {link.label}
           </Link>
         ))}
-        {authed ? (
+        {me ? (
           <button type="button" onClick={onLogout}>
             Logout
           </button>
-        ) : (
+        ) : loading ? null : (
           <Link href="/login">Login</Link>
         )}
       </nav>

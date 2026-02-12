@@ -25,7 +25,15 @@ func SessionFromContext(ctx context.Context) (models.Session, bool) {
 func RequireSession(st *store.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			// Prefer cookie session (web UI). Keep bearer headers for backwards compatibility (CLI/tests).
+			token := ""
+			if c, err := r.Cookie("nebula_session"); err == nil {
+				token = c.Value
+			}
+			token = strings.TrimSpace(token)
+			if token == "" {
+				token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			}
 			if token == "" {
 				token = r.Header.Get("X-Session-Token")
 			}

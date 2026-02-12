@@ -199,6 +199,30 @@ func (s *Store) ZoneRecords(ctx context.Context, zone string) ([]DNSRecord, erro
 	return out, nil
 }
 
+func (s *Store) DeleteZone(ctx context.Context, zone string) error {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var zoneID string
+	err = tx.QueryRow(ctx, `SELECT id FROM dns_zones WHERE zone_name=$1`, zone).Scan(&zoneID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM dns_records WHERE zone_id=$1`, zoneID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM dns_zones WHERE id=$1`, zoneID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 type MailDomain struct {
 	Domain string `json:"domain"`
 }
