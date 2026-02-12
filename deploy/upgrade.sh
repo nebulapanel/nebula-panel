@@ -74,13 +74,25 @@ build_binaries() {
   )
 }
 
+have_prebuilt_binaries() {
+  [[ -x "${ROOT_DIR}/bin/nebula-api" && -x "${ROOT_DIR}/bin/nebula-agent" && -x "${ROOT_DIR}/bin/nebula-worker" ]]
+}
+
+ensure_binaries() {
+  if have_prebuilt_binaries; then
+    echo "Using prebuilt Nebula binaries from ${ROOT_DIR}/bin"
+    return
+  fi
+  ensure_go_toolchain
+  build_binaries
+}
+
 mkdir -p "${BACKUP_DIR}"
 if [[ -d "${INSTALL_DIR}" ]]; then
   rsync -a "${INSTALL_DIR}/" "${BACKUP_DIR}/"
 fi
 
-ensure_go_toolchain
-build_binaries
+ensure_binaries
 
 install -m 755 "${ROOT_DIR}/bin/nebula-api" /usr/local/bin/nebula-api
 install -m 755 "${ROOT_DIR}/bin/nebula-agent" /usr/local/bin/nebula-agent

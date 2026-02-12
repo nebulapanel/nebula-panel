@@ -4,21 +4,23 @@ import { FormEvent, useEffect, useState } from 'react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { getAuth, setAuth } from '@/lib/auth';
+import { setCSRF } from '@/lib/auth';
+import { useAuth } from '@/components/auth-provider';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('admin@localhost');
-  const [password, setPassword] = useState('admin123!');
-  const [totpCode, setTotpCode] = useState('000000');
+  const { me, refresh } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [preauth, setPreauth] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (getAuth()) {
+    if (me) {
       router.replace('/');
     }
-  }, [router]);
+  }, [me, router]);
 
   async function onLogin(e: FormEvent) {
     e.preventDefault();
@@ -29,12 +31,12 @@ export default function LoginPage() {
         setPreauth(res.preauth_token ?? '');
         return;
       }
-      const token = res.session?.token ?? '';
       const csrf = res.csrf_token ?? '';
-      if (!token || !csrf) {
-        throw new Error('Login succeeded but tokens are missing.');
+      if (!csrf) {
+        throw new Error('Login succeeded but CSRF token is missing.');
       }
-      setAuth({ sessionToken: token, csrfToken: csrf });
+      setCSRF(csrf);
+      await refresh();
       router.push('/');
     } catch (err) {
       setError((err as Error).message);
@@ -46,12 +48,12 @@ export default function LoginPage() {
     setError('');
     try {
       const res = await api.verifyTotp(preauth, totpCode);
-      const token = res.session?.token ?? '';
       const csrf = res.csrf_token ?? '';
-      if (!token || !csrf) {
-        throw new Error('TOTP verify succeeded but tokens are missing.');
+      if (!csrf) {
+        throw new Error('TOTP verify succeeded but CSRF token is missing.');
       }
-      setAuth({ sessionToken: token, csrfToken: csrf });
+      setCSRF(csrf);
+      await refresh();
       router.push('/');
     } catch (err) {
       setError((err as Error).message);
@@ -64,7 +66,7 @@ export default function LoginPage() {
         <Image src="/nebula-logo.png" alt="Nebula Panel" width={72} height={72} priority />
         <div>
           <h1>Admin Login</h1>
-          <p>Use TOTP after password for admin sessions.</p>
+          <p>Enter a 2FA code only if you enabled Google Authenticator.</p>
         </div>
       </div>
       <form onSubmit={onLogin} className="stack">
@@ -75,7 +77,7 @@ export default function LoginPage() {
 
       {preauth && (
         <form onSubmit={onVerifyTotp} className="stack top-gap">
-          <input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="TOTP code" />
+          <input value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="6-digit code" inputMode="numeric" />
           <button className="btn btn-secondary" type="submit">Verify TOTP</button>
         </form>
       )}

@@ -65,6 +65,7 @@ type DNSRecord struct {
 
 type DNSZone struct {
 	Zone      string      `json:"zone"`
+	OwnerID   string      `json:"owner_id,omitempty"`
 	Serial    int64       `json:"serial"`
 	CreatedAt time.Time   `json:"created_at"`
 	Records   []DNSRecord `json:"records"`
@@ -72,6 +73,7 @@ type DNSZone struct {
 
 type MailDomain struct {
 	Domain    string    `json:"domain"`
+	OwnerID   string    `json:"owner_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

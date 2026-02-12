@@ -6,6 +6,12 @@ info:
 servers:
   - url: /v1
 paths:
+  /version:
+    get:
+      tags: [Meta]
+      responses:
+        '200': {description: OK}
+
   /auth/login:
     post:
       tags: [Auth]
@@ -16,7 +22,12 @@ paths:
             schema:
               $ref: '#/components/schemas/LoginRequest'
       responses:
-        '200': {description: OK}
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
         '401': {description: Unauthorized}
   /auth/totp/verify:
     post:
@@ -39,6 +50,52 @@ paths:
     get:
       tags: [Auth]
       security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+
+  /auth/totp/status:
+    get:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+
+  /auth/totp/enroll/start:
+    post:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+
+  /auth/totp/enroll/verify:
+    post:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
+      responses:
+        '200': {description: OK}
+
+  /auth/totp/disable:
+    post:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
       responses:
         '200': {description: OK}
 
@@ -211,6 +268,11 @@ paths:
                 zone: {type: string}
       responses:
         '201': {description: Created}
+    get:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
   /dns/zones/{zone}:
     get:
       tags: [DNS]
@@ -222,6 +284,16 @@ paths:
           schema: {type: string}
       responses:
         '200': {description: OK}
+    delete:
+      tags: [DNS]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: zone
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
   /dns/zones/{zone}/records:
     put:
       tags: [DNS]
@@ -295,6 +367,11 @@ paths:
                 domain: {type: string}
       responses:
         '201': {description: Created}
+    get:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
   /mail/domains/{domain}/mailboxes:
     post:
       tags: [Mail]
@@ -317,6 +394,27 @@ paths:
                 quota_mb: {type: integer}
       responses:
         '201': {description: Created}
+    get:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: domain
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /mail/domains/{domain}/dns-auth:
+    get:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: domain
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
   /mail/aliases:
     post:
       tags: [Mail]
@@ -334,6 +432,27 @@ paths:
                 destination: {type: string}
       responses:
         '201': {description: Created}
+    get:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: domain
+          required: false
+          schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /mail/aliases/{id}:
+    delete:
+      tags: [Mail]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
+      responses:
+        '202': {description: Accepted}
   /mail/mailboxes/{id}:
     delete:
       tags: [Mail]
@@ -382,6 +501,17 @@ paths:
     get:
       tags: [Backups]
       security: [{ bearerAuth: [] }]
+      responses:
+        '200': {description: OK}
+  /backups/{id}:
+    get:
+      tags: [Backups]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: {type: string}
       responses:
         '200': {description: OK}
   /backups/{id}/restore:
@@ -444,6 +574,12 @@ components:
       properties:
         email: {type: string, format: email}
         password: {type: string}
+    LoginResponse:
+      type: object
+      properties:
+        csrf_token: {type: string}
+        totp_required: {type: boolean}
+        preauth_token: {type: string}
     TOTPVerifyRequest:
       type: object
       required: [preauth_token, code]
@@ -461,7 +597,7 @@ components:
           enum: [admin, user]
     CreateSiteRequest:
       type: object
-      required: [name, domain, owner_id]
+      required: [name, domain]
       properties:
         name: {type: string}
         domain: {type: string}

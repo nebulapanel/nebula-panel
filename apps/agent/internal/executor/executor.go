@@ -94,6 +94,7 @@ func New(cfg config.Config) *Executor {
 			"ssl_issue":      true,
 			"ssl_renew":      true,
 			"dns_apply":      true,
+			"dns_delete":     true,
 			"mail_apply":     true,
 			"backup_run":     true,
 			"backup_restore": true,
@@ -223,6 +224,9 @@ func (e *Executor) Execute(ctx context.Context, t Task) error {
 	case "dns_apply":
 		return e.handleDNSApply(ctx, t)
 
+	case "dns_delete":
+		return e.handleDNSDelete(ctx, t)
+
 	case "mail_apply":
 		return e.handleMailApply(ctx, t)
 
@@ -337,6 +341,25 @@ func (e *Executor) handleDNSApply(ctx context.Context, t Task) error {
 	return e.applyPowerDNS(ctx, zone, records)
 }
 
+func (e *Executor) handleDNSDelete(ctx context.Context, t Task) error {
+	if e.cfg.PowerDNSAPIKey == "" {
+		return errors.New("PowerDNS API key is not configured")
+	}
+	zone := strings.TrimSpace(t.Args["zone"])
+	if zone == "" {
+		zone = strings.TrimSpace(t.Target)
+	}
+	if zone == "" {
+		return errors.New("zone is required")
+	}
+
+	if e.cfg.DryRun {
+		log.Printf("[dry-run] dns_delete zone=%s", zone)
+		return nil
+	}
+	return e.deletePowerDNSZone(ctx, zone)
+}
+
 func (e *Executor) applyPowerDNS(ctx context.Context, zone string, records []dnsRecord) error {
 	zoneName := ensureFQDN(zone)
 	desired := buildDesiredRRsets(zoneName, records)
@@ -372,6 +395,28 @@ func (e *Executor) applyPowerDNS(ctx context.Context, zone string, records []dns
 	if resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return fmt.Errorf("pdns patch failed status=%d body=%s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
+func (e *Executor) deletePowerDNSZone(ctx context.Context, zone string) error {
+	zoneName := ensureFQDN(zone)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, e.pdnsZoneURL(zoneName), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-API-Key", e.cfg.PowerDNSAPIKey)
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("pdns delete zone failed status=%d body=%s", resp.StatusCode, string(raw))
 	}
 	return nil
 }

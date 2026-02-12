@@ -32,23 +32,24 @@ Nebula Panel is a single-server hosting control panel with web, DNS, SSL, files,
 Use this on a fresh Ubuntu 22.04/24.04 VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nebulapanel/nebula-panel/main/scripts/install-ubuntu.sh | sudo bash
+curl -fsSL https://github.com/nebulapanel/nebula-panel/releases/latest/download/get.sh | sudo bash
 ```
 
 What it does:
-- Clones Nebula source to `/opt/src/Nebula`
+- Downloads the latest signed release archive and verifies SHA256
+- Extracts source to `/opt/src/Nebula`
 - Installs dependencies (Nginx, PostgreSQL, MariaDB, Redis, PowerDNS, Postfix, Dovecot, OpenDKIM, Fail2ban, Node)
-- Ensures modern Go toolchain is installed
-- Builds Nebula binaries on the server
+- Uses prebuilt Linux binaries from the release (no Go toolchain required on the VPS)
 - Runs `deploy/install.sh`
 
+During install, the terminal prompts you for:
+- Admin email
+- Admin password (or it generates one and prints it once)
+
 After install:
-1. Edit `/etc/nebula-panel/secrets.env`
-2. Restart services:
-   - `sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx`
-3. Verify:
+1. Verify API:
    - `curl -s http://127.0.0.1:8080/healthz`
-4. Open:
+2. Open the panel:
    - `http://<your-server-ip>/`
 
 ## Operations Docs

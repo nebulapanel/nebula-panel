@@ -10,32 +10,34 @@ All provisioning operations are async:
 ## 1) Login
 
 ```bash
-LOGIN=$(curl -si -X POST http://127.0.0.1:8080/v1/auth/login \
+rm -f cookies.txt
+
+LOGIN=$(curl -sS -c cookies.txt -X POST http://127.0.0.1:8080/v1/auth/login \
   -H 'content-type: application/json' \
   -d '{"email":"admin@localhost","password":"admin123!"}')
 
-PREAUTH=$(echo "$LOGIN" | sed -n '/^\r$/,$p' | jq -r '.preauth_token')
+echo "$LOGIN" | jq
+
+CSRF=$(echo "$LOGIN" | jq -r '.csrf_token')
 ```
 
-## 2) TOTP verify
+Note: TOTP (Google Authenticator) is optional. If enabled for the account, login returns
+`{"totp_required": true, "preauth_token": "..."}` and you must complete:
 
 ```bash
-TOTP=$(curl -si -X POST http://127.0.0.1:8080/v1/auth/totp/verify \
+PREAUTH=$(echo "$LOGIN" | jq -r '.preauth_token')
+TOTP=$(curl -sS -b cookies.txt -c cookies.txt -X POST http://127.0.0.1:8080/v1/auth/totp/verify \
   -H 'content-type: application/json' \
-  -d "{\"preauth_token\":\"$PREAUTH\",\"code\":\"000000\"}")
-
-SESSION=$(echo "$TOTP" | sed -n '/^\r$/,$p' | jq -r '.session.token')
-CSRF=$(echo "$TOTP" | sed -n '/^\r$/,$p' | jq -r '.csrf_token')
-COOKIE=$(echo "$TOTP" | awk '/set-cookie: nebula_csrf/ {print $2}' | tr -d ';\r')
+  -d "{\"preauth_token\":\"$PREAUTH\",\"code\":\"123456\"}")
+CSRF=$(echo "$TOTP" | jq -r '.csrf_token')
 ```
 
-## 3) Create user
+## 2) Create user
 
 ```bash
 USER_CREATE=$(curl -s -X POST http://127.0.0.1:8080/v1/users \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" \
+  -b cookies.txt \
   -H 'content-type: application/json' \
   -d '{"email":"user1@example.com","password":"StrongPass#1","role":"user"}')
 
@@ -48,23 +50,20 @@ Wait for the Linux user + SFTP jail provisioning job to complete:
 
 ```bash
 curl -s "http://127.0.0.1:8080/v1/jobs/$JOB_ID" \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" | jq
+  -b cookies.txt | jq
 
 curl -s "http://127.0.0.1:8080/v1/jobs/$JOB_ID/events" \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" | jq
+  -b cookies.txt | jq
 ```
 
-## 4) Create site
+## 3) Create site
 
 ```bash
 SITE_CREATE=$(curl -s -X POST http://127.0.0.1:8080/v1/sites \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" \
+  -b cookies.txt \
   -H 'content-type: application/json' \
   -d "{\"name\":\"My Site\",\"domain\":\"example.com\",\"owner_id\":\"$USER_ID\"}")
 
@@ -77,18 +76,16 @@ Wait for Nginx + PHP-FPM provisioning:
 
 ```bash
 curl -s "http://127.0.0.1:8080/v1/jobs/$SITE_JOB" \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" | jq
+  -b cookies.txt | jq
 ```
 
 ## 5) Issue SSL for the site
 
 ```bash
 SSL=$(curl -s -X POST "http://127.0.0.1:8080/v1/sites/$SITE_ID/ssl/issue" \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" \
+  -b cookies.txt \
   -H 'content-type: application/json' \
   -d '{}')
 
@@ -100,8 +97,7 @@ Poll:
 
 ```bash
 curl -s "http://127.0.0.1:8080/v1/jobs/$SSL_JOB" \
-  -H "Authorization: Bearer $SESSION" \
   -H "X-CSRF-Token: $CSRF" \
-  -H "Cookie: $COOKIE" | jq
+  -b cookies.txt | jq
 ```
 ```

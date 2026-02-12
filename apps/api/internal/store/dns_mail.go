@@ -12,13 +12,14 @@ import (
 	"github.com/nebula-panel/nebula/apps/api/internal/models"
 )
 
-func (s *Store) CreateZone(zone string, records []models.DNSRecord) models.DNSZone {
+func (s *Store) CreateZone(ownerUserID, zone string, records []models.DNSRecord) (models.DNSZone, error) {
 	ctx, cancel := s.ctx()
 	defer cancel()
 
 	normZone := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), ".")
 	z := models.DNSZone{
 		Zone:      normZone,
+		OwnerID:   ownerUserID,
 		Serial:    time.Now().UTC().Unix(),
 		CreatedAt: time.Now().UTC(),
 		Records:   records,
@@ -26,18 +27,18 @@ func (s *Store) CreateZone(zone string, records []models.DNSRecord) models.DNSZo
 
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return z
+		return models.DNSZone{}, err
 	}
 	defer tx.Rollback(ctx)
 
 	zoneID := "zone_" + uuid.NewString()
 	err = tx.QueryRow(ctx, `
-		INSERT INTO dns_zones (id, zone_name, soa_serial)
-		VALUES ($1, $2, $3)
+		INSERT INTO dns_zones (id, zone_name, owner_user_id, soa_serial)
+		VALUES ($1, $2, $3, $4)
 		RETURNING created_at
-	`, zoneID, z.Zone, z.Serial).Scan(&z.CreatedAt)
+	`, zoneID, z.Zone, z.OwnerID, z.Serial).Scan(&z.CreatedAt)
 	if err != nil {
-		return z
+		return models.DNSZone{}, err
 	}
 
 	for i := range z.Records {
@@ -52,14 +53,14 @@ func (s *Store) CreateZone(zone string, records []models.DNSRecord) models.DNSZo
 			VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, 0))
 		`, z.Records[i].ID, zoneID, strings.ToUpper(z.Records[i].Type), z.Records[i].Name, z.Records[i].Value, z.Records[i].TTL, z.Records[i].Priority)
 		if err != nil {
-			return z
+			return models.DNSZone{}, err
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return z
+		return models.DNSZone{}, err
 	}
-	return z
+	return z, nil
 }
 
 func (s *Store) GetZone(zone string) (models.DNSZone, bool) {
@@ -70,9 +71,9 @@ func (s *Store) GetZone(zone string) (models.DNSZone, bool) {
 	var zoneID string
 	var z models.DNSZone
 	err := s.db.QueryRow(ctx, `
-		SELECT id, zone_name, soa_serial, created_at
+		SELECT id, zone_name, owner_user_id, soa_serial, created_at
 		FROM dns_zones WHERE zone_name=$1
-	`, normZone).Scan(&zoneID, &z.Zone, &z.Serial, &z.CreatedAt)
+	`, normZone).Scan(&zoneID, &z.Zone, &z.OwnerID, &z.Serial, &z.CreatedAt)
 	if err != nil {
 		return models.DNSZone{}, false
 	}
@@ -97,6 +98,55 @@ func (s *Store) GetZone(zone string) (models.DNSZone, bool) {
 	}
 	z.Records = recs
 	return z, true
+}
+
+func (s *Store) ListZones() []models.DNSZone {
+	ctx, cancel := s.ctx()
+	defer cancel()
+
+	rows, err := s.db.Query(ctx, `
+		SELECT zone_name, owner_user_id, soa_serial, created_at
+		FROM dns_zones
+		ORDER BY zone_name ASC
+	`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]models.DNSZone, 0)
+	for rows.Next() {
+		var z models.DNSZone
+		if err := rows.Scan(&z.Zone, &z.OwnerID, &z.Serial, &z.CreatedAt); err == nil {
+			out = append(out, z)
+		}
+	}
+	return out
+}
+
+func (s *Store) ListZonesForOwner(ownerUserID string) []models.DNSZone {
+	ctx, cancel := s.ctx()
+	defer cancel()
+
+	rows, err := s.db.Query(ctx, `
+		SELECT zone_name, owner_user_id, soa_serial, created_at
+		FROM dns_zones
+		WHERE owner_user_id=$1
+		ORDER BY zone_name ASC
+	`, ownerUserID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]models.DNSZone, 0)
+	for rows.Next() {
+		var z models.DNSZone
+		if err := rows.Scan(&z.Zone, &z.OwnerID, &z.Serial, &z.CreatedAt); err == nil {
+			out = append(out, z)
+		}
+	}
+	return out
 }
 
 func (s *Store) ReplaceZoneRecords(zone string, records []models.DNSRecord) (models.DNSZone, error) {
@@ -193,18 +243,19 @@ func (s *Store) DeleteZoneRecord(zone, id string) (models.DNSZone, error) {
 	return z, nil
 }
 
-func (s *Store) CreateMailDomain(domain string) (models.MailDomain, error) {
+func (s *Store) CreateMailDomain(ownerUserID, domain string) (models.MailDomain, error) {
 	ctx, cancel := s.ctx()
 	defer cancel()
 
 	normDomain := strings.ToLower(strings.TrimSpace(domain))
-	md := models.MailDomain{Domain: normDomain, CreatedAt: time.Now().UTC()}
+	md := models.MailDomain{Domain: normDomain, OwnerID: ownerUserID, CreatedAt: time.Now().UTC()}
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO mail_domains (id, domain)
-		VALUES ($1, $2)
-		ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain
+		INSERT INTO mail_domains (id, domain, owner_user_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (domain) DO UPDATE
+		SET domain=EXCLUDED.domain
 		RETURNING created_at
-	`, "md_"+uuid.NewString(), normDomain).Scan(&md.CreatedAt)
+	`, "md_"+uuid.NewString(), normDomain, md.OwnerID).Scan(&md.CreatedAt)
 	if err != nil {
 		return models.MailDomain{}, err
 	}
@@ -258,6 +309,19 @@ func (s *Store) DeleteMailbox(id string) {
 	ctx, cancel := s.ctx()
 	defer cancel()
 	_, _ = s.db.Exec(ctx, `DELETE FROM mailboxes WHERE id=$1`, id)
+}
+
+func (s *Store) DeleteAlias(id string) error {
+	ctx, cancel := s.ctx()
+	defer cancel()
+	tag, err := s.db.Exec(ctx, `DELETE FROM mail_aliases WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("alias not found")
+	}
+	return nil
 }
 
 func (s *Store) CreateAlias(domain, source, destination string) (models.MailAlias, error) {
