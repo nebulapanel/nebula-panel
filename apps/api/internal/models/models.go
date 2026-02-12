@@ -10,11 +10,13 @@ const (
 )
 
 type User struct {
-	ID           string    `json:"id"`
-	Email        string    `json:"email"`
-	Role         Role      `json:"role"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	Role          Role      `json:"role"`
+	LinuxUsername string    `json:"linux_username"`
+	SFTPEnabled   bool      `json:"sftp_enabled"`
+	PasswordHash  string    `json:"-"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type Session struct {
@@ -130,6 +132,14 @@ type Job struct {
 	Message    string    `json:"message,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
+type JobEvent struct {
+	ID        string    `json:"id"`
+	JobID     string    `json:"job_id"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type AuditLog struct {

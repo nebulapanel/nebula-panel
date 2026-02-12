@@ -26,7 +26,7 @@ func Load() Config {
 		SocketPath:         envOr("NEBULA_AGENT_SOCKET", "/run/nebula-agent.sock"),
 		SharedSecret:       envOr("NEBULA_AGENT_SHARED_SECRET", "change-me-in-prod"),
 		DryRun:             envBoolOr("NEBULA_AGENT_DRY_RUN", true),
-		CmdTimeout:         envDurationOr("NEBULA_AGENT_CMD_TIMEOUT", 20*time.Second),
+		CmdTimeout:         envDurationOr("NEBULA_AGENT_CMD_TIMEOUT", 10*time.Minute),
 		PowerDNSAPIURL:     envOr("NEBULA_PDNS_API_URL", "http://127.0.0.1:8081"),
 		PowerDNSAPIKey:     envOr("NEBULA_PDNS_API_KEY", ""),
 		PowerDNSServerID:   envOr("NEBULA_PDNS_SERVER_ID", "localhost"),

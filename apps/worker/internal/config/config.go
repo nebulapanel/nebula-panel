@@ -7,6 +7,8 @@ import (
 )
 
 type Config struct {
+	DatabaseURL       string
+	AppKey            string
 	AgentSocket       string
 	AgentSharedSecret string
 	SSLRenewInterval  time.Duration
@@ -17,6 +19,8 @@ type Config struct {
 
 func Load() Config {
 	return Config{
+		DatabaseURL:       envOr("NEBULA_DATABASE_URL", "postgres://nebula:nebula@127.0.0.1:5432/nebula?sslmode=disable"),
+		AppKey:            envOr("NEBULA_APP_KEY", ""),
 		AgentSocket:       envOr("NEBULA_AGENT_SOCKET", "/run/nebula-agent.sock"),
 		AgentSharedSecret: envOr("NEBULA_AGENT_SHARED_SECRET", "change-me-in-prod"),
 		SSLRenewInterval:  envDurationOr("NEBULA_SSL_RENEW_INTERVAL", 12*time.Hour),

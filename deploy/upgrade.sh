@@ -86,6 +86,25 @@ install -m 755 "${ROOT_DIR}/bin/nebula-api" /usr/local/bin/nebula-api
 install -m 755 "${ROOT_DIR}/bin/nebula-agent" /usr/local/bin/nebula-agent
 install -m 755 "${ROOT_DIR}/bin/nebula-worker" /usr/local/bin/nebula-worker
 
+# Ensure SFTP jail is configured for tenant users (safe to re-run).
+getent group nebula-sftp >/dev/null 2>&1 || groupadd --system nebula-sftp
+mkdir -p /etc/ssh/sshd_config.d
+if [[ ! -f /etc/ssh/sshd_config.d/nebula-sftp.conf ]]; then
+  cat > /etc/ssh/sshd_config.d/nebula-sftp.conf <<'EOF'
+# Managed by Nebula Panel. Members of nebula-sftp are jailed to /home/%u with SFTP only.
+Match Group nebula-sftp
+  ChrootDirectory /home/%u
+  ForceCommand internal-sftp
+  AllowTcpForwarding no
+  X11Forwarding no
+  PermitTunnel no
+EOF
+  if command -v sshd >/dev/null 2>&1; then
+    sshd -t || true
+  fi
+  systemctl reload ssh >/dev/null 2>&1 || systemctl restart ssh >/dev/null 2>&1 || true
+fi
+
 # Refresh Nebula systemd units (safe to overwrite; keeps upgrades consistent).
 install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-agent.service" /etc/systemd/system/nebula-agent.service
 install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-api.service" /etc/systemd/system/nebula-api.service

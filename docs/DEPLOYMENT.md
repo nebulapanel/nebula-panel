@@ -46,7 +46,12 @@ Set at minimum:
 - `NEBULA_ADMIN_TOTP_CODE` (do not keep `000000`)
 - `NEBULA_ACME_EMAIL`
 - `NEBULA_PDNS_API_KEY`
+- `NEBULA_APP_KEY` (32-byte hex or base64; used to encrypt secrets at rest)
 - `NEBULA_ZEROSSL_EAB_KID` and `NEBULA_ZEROSSL_EAB_HMAC_KEY` (if using ZeroSSL fallback)
+
+Recommended for DNS hosting:
+- `NEBULA_NS1_FQDN`, `NEBULA_NS2_FQDN` (your global nameservers)
+- `NEBULA_PUBLIC_IPV4` (auto-detected on install; used to seed nameserver A records when applicable)
 
 Restart services:
 
@@ -61,14 +66,22 @@ curl -s http://127.0.0.1:8080/healthz
 sudo bash /opt/src/Nebula/scripts/verify-stack.sh
 ```
 
+Provisioning model (important):
+- The API enqueues jobs in Postgres (`queued`)
+- `nebula-worker` picks them up and runs privileged tasks via `nebula-agent`
+- Track progress using:
+  - `GET /v1/jobs`
+  - `GET /v1/jobs/{id}`
+  - `GET /v1/jobs/{id}/events`
+
 Panel URL (default):
 - `http://<your-server-ip>/`
 
 ## 5) DNS + SSL Go-Live
 
-- Create glue records:
-  - `ns1.your-domain.com` -> VPS IP
-  - `ns2.your-domain.com` -> VPS IP
+- If you run your own nameservers, create glue records for your chosen nameserver hostnames:
+  - `NEBULA_NS1_FQDN` -> VPS IP
+  - `NEBULA_NS2_FQDN` -> VPS IP
 - Update `server_name` in `/etc/nginx/sites-available/nebula-panel.conf`
 - Reload Nginx:
   - `sudo systemctl reload nginx`

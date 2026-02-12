@@ -14,10 +14,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nebula-panel/nebula/apps/agent/internal/config"
+	"github.com/nebula-panel/nebula/packages/lib/validate"
 )
 
 type Task struct {
@@ -81,6 +83,12 @@ func New(cfg config.Config) *Executor {
 			Timeout: 20 * time.Second,
 		},
 		allowlist: map[string]bool{
+			"user_provision": true,
+			"user_rotate_password": true,
+			"db_create_mariadb": true,
+			"db_delete_mariadb": true,
+			"db_create_postgres": true,
+			"db_delete_postgres": true,
 			"site_create":    true,
 			"site_delete":    true,
 			"ssl_issue":      true,
@@ -100,30 +108,113 @@ func (e *Executor) Execute(ctx context.Context, t Task) error {
 	}
 
 	switch t.Type {
-	case "site_create":
-		owner := strings.TrimSpace(t.Args["owner_id"])
-		domain := strings.TrimSpace(t.Args["domain"])
-		if owner == "" || domain == "" {
-			return errors.New("owner_id and domain are required")
+	case "user_provision", "user_rotate_password":
+		linuxUsername := strings.TrimSpace(t.Args["linux_username"])
+		if linuxUsername == "" {
+			return errors.New("linux_username is required")
 		}
-		root := filepath.Join("/home", owner, "web", domain, "public_html")
-		if e.cfg.DryRun {
-			log.Printf("[dry-run] mkdir -p %s", root)
-			return nil
-		}
-		if err := os.MkdirAll(root, 0o750); err != nil {
+		if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
 			return err
 		}
+		password := strings.TrimSpace(t.Args["password"])
+		if e.cfg.DryRun {
+			log.Printf("[dry-run] %s linux_username=%s", t.Type, linuxUsername)
+			return nil
+		}
+		if err := e.ensureLinuxUser(ctx, linuxUsername); err != nil {
+			return err
+		}
+		if password != "" {
+			if err := e.setLinuxPassword(ctx, linuxUsername, password); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "db_create_mariadb":
+		return e.handleMariaDBCreate(ctx, t)
+
+	case "db_delete_mariadb":
+		return e.handleMariaDBDelete(ctx, t)
+
+	case "db_create_postgres":
+		return e.handlePostgresCreate(ctx, t)
+
+	case "db_delete_postgres":
+		return e.handlePostgresDelete(ctx, t)
+
+	case "site_create":
+		linuxUsername := strings.TrimSpace(t.Args["linux_username"])
+		domain := strings.TrimSpace(t.Args["domain"])
+		if linuxUsername == "" || domain == "" {
+			return errors.New("linux_username and domain are required")
+		}
+		if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
+			return err
+		}
+		normDomain, err := validate.NormalizeDomain(domain)
+		if err != nil {
+			return err
+		}
+		domain = normDomain
+
+		root := filepath.Join("/home", linuxUsername, "web", domain, "public_html")
+		if e.cfg.DryRun {
+			log.Printf("[dry-run] site_create user=%s domain=%s root=%s", linuxUsername, domain, root)
+			return nil
+		}
+		if err := e.ensureLinuxUser(ctx, linuxUsername); err != nil {
+			return err
+		}
+		if err := e.ensurePHPFPM(ctx, linuxUsername); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return err
+		}
+		_ = os.MkdirAll(filepath.Join("/home", linuxUsername, "web", domain, "logs"), 0o755)
+		_ = e.runCommand(ctx, "chown", "-R", linuxUsername+":"+linuxUsername, filepath.Join("/home", linuxUsername, "web", domain))
 		indexPath := filepath.Join(root, "index.php")
 		if _, err := os.Stat(indexPath); errors.Is(err, os.ErrNotExist) {
-			_ = os.WriteFile(indexPath, []byte("<?php echo 'Nebula Panel site ready';"), 0o640)
+			_ = os.WriteFile(indexPath, []byte("<?php echo 'Nebula Panel site ready';"), 0o644)
+		}
+		if err := e.writeNginxSiteConfig(domain, linuxUsername, false); err != nil {
+			return err
+		}
+		if err := e.runCommand(ctx, "nginx", "-t"); err != nil {
+			return err
+		}
+		if err := e.reloadService(ctx, "nginx"); err != nil {
+			return err
 		}
 		return nil
 
 	case "site_delete":
-		if e.cfg.DryRun {
-			log.Printf("[dry-run] site_delete target=%s", t.Target)
+		linuxUsername := strings.TrimSpace(t.Args["linux_username"])
+		domain := strings.TrimSpace(t.Args["domain"])
+		if linuxUsername == "" || domain == "" {
+			return errors.New("linux_username and domain are required")
 		}
+		if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
+			return err
+		}
+		normDomain, err := validate.NormalizeDomain(domain)
+		if err != nil {
+			return err
+		}
+		domain = normDomain
+		if e.cfg.DryRun {
+			log.Printf("[dry-run] site_delete user=%s domain=%s", linuxUsername, domain)
+			return nil
+		}
+		_ = e.disableNginxSite(domain)
+		if err := e.runCommand(ctx, "nginx", "-t"); err != nil {
+			return err
+		}
+		if err := e.reloadService(ctx, "nginx"); err != nil {
+			return err
+		}
+		_ = os.RemoveAll(filepath.Join("/home", linuxUsername, "web", domain))
 		return nil
 
 	case "ssl_issue", "ssl_renew":
@@ -152,10 +243,22 @@ func (e *Executor) Execute(ctx context.Context, t Task) error {
 }
 
 func (e *Executor) handleSSL(ctx context.Context, t Task) error {
+	linuxUsername := strings.TrimSpace(t.Args["linux_username"])
 	domain := strings.TrimSpace(t.Args["domain"])
 	if domain == "" {
 		return errors.New("domain is required")
 	}
+	if linuxUsername == "" {
+		return errors.New("linux_username is required for SSL install")
+	}
+	if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
+		return err
+	}
+	normDomain, err := validate.NormalizeDomain(domain)
+	if err != nil {
+		return err
+	}
+	domain = normDomain
 	email := strings.TrimSpace(t.Args["email"])
 	if email == "" {
 		email = e.cfg.ACMEEmail
@@ -192,6 +295,15 @@ func (e *Executor) handleSSL(ctx context.Context, t Task) error {
 
 	if err := e.runCommand(ctx, "certbot", args...); err != nil {
 		return fmt.Errorf("%s certificate flow failed: %w", provider, err)
+	}
+
+	if !e.cfg.DryRun {
+		if err := e.writeNginxSiteConfig(domain, linuxUsername, true); err != nil {
+			return err
+		}
+		if err := e.runCommand(ctx, "nginx", "-t"); err != nil {
+			return err
+		}
 	}
 
 	_ = e.reloadService(ctx, "nginx")
@@ -424,16 +536,17 @@ func buildPatchRRsets(existing, desired []pdnsRRset) []pdnsRRset {
 
 func normalizeRecordName(zoneName, name string) string {
 	n := strings.TrimSpace(name)
-	if n == "" || n == "@" {
+	zoneRoot := strings.TrimSuffix(zoneName, ".")
+	if n == "" || n == "@" || strings.EqualFold(n, zoneRoot) {
 		return zoneName
 	}
 	if strings.HasSuffix(n, ".") {
 		return n
 	}
-	if strings.HasSuffix(strings.ToLower(n), strings.ToLower(zoneName)) {
+	if strings.HasSuffix(strings.ToLower(n), "."+strings.ToLower(zoneRoot)) {
 		return ensureFQDN(n)
 	}
-	return ensureFQDN(n + "." + strings.TrimSuffix(zoneName, "."))
+	return ensureFQDN(n + "." + zoneRoot)
 }
 
 func normalizeRecordContent(recordType, value string, priority int) string {
@@ -647,4 +760,447 @@ func (e *Executor) reloadService(ctx context.Context, service string) error {
 		return fmt.Errorf("service reload not allowed: %s", service)
 	}
 	return e.runCommand(ctx, "systemctl", "reload", service)
+}
+
+func (e *Executor) runCommandWithInput(ctx context.Context, input []byte, name string, args ...string) error {
+	if e.cfg.DryRun {
+		log.Printf("[dry-run] %s %s <stdin %d bytes>", name, strings.Join(args, " "), len(input))
+		return nil
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, e.cfg.CmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	cmd.Stdin = bytes.NewReader(input)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("command failed: %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (e *Executor) commandSucceeds(ctx context.Context, name string, args ...string) (bool, string, error) {
+	if e.cfg.DryRun {
+		return true, "", nil
+	}
+	cmdCtx, cancel := context.WithTimeout(ctx, e.cfg.CmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, name, args...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, string(out), nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return false, string(out), nil
+	}
+	return false, string(out), err
+}
+
+func (e *Executor) ensureLinuxUser(ctx context.Context, linuxUsername string) error {
+	if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
+		return err
+	}
+
+	ok, _, err := e.commandSucceeds(ctx, "getent", "group", "nebula-sftp")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		// idempotent in practice; groupadd fails if it already exists.
+		_ = e.runCommand(ctx, "groupadd", "--system", "nebula-sftp")
+	}
+
+	ok, _, err = e.commandSucceeds(ctx, "id", "-u", linuxUsername)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if err := e.runCommand(ctx, "useradd",
+			"--create-home",
+			"--home-dir", filepath.Join("/home", linuxUsername),
+			"--shell", "/usr/sbin/nologin",
+			"--user-group",
+			linuxUsername,
+		); err != nil {
+			return err
+		}
+	}
+
+	// Ensure SFTP group membership and chroot-safe home ownership.
+	_ = e.runCommand(ctx, "usermod", "-aG", "nebula-sftp", linuxUsername)
+
+	home := filepath.Join("/home", linuxUsername)
+	_ = e.runCommand(ctx, "chown", "root:root", home)
+	_ = e.runCommand(ctx, "chmod", "0755", home)
+
+	for _, sub := range []string{"web", "logs"} {
+		p := filepath.Join(home, sub)
+		_ = os.MkdirAll(p, 0o755)
+		_ = e.runCommand(ctx, "chown", "-R", linuxUsername+":"+linuxUsername, p)
+	}
+
+	return nil
+}
+
+func (e *Executor) setLinuxPassword(ctx context.Context, linuxUsername, password string) error {
+	if strings.ContainsAny(password, "\r\n") {
+		return errors.New("password contains newline characters")
+	}
+	line := []byte(linuxUsername + ":" + password + "\n")
+	return e.runCommandWithInput(ctx, line, "chpasswd")
+}
+
+func (e *Executor) detectPHPFPM() (phpVersion string, poolDir string, service string, err error) {
+	entries, err := os.ReadDir("/etc/php")
+	if err != nil {
+		return "", "", "", err
+	}
+	type cand struct {
+		ver        string
+		majorMinor [2]int
+	}
+	cands := make([]cand, 0)
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		ver := ent.Name()
+		parts := strings.Split(ver, ".")
+		if len(parts) < 2 {
+			continue
+		}
+		maj, err1 := strconv.Atoi(parts[0])
+		min, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		dir := filepath.Join("/etc/php", ver, "fpm", "pool.d")
+		if _, err := os.Stat(dir); err == nil {
+			cands = append(cands, cand{ver: ver, majorMinor: [2]int{maj, min}})
+		}
+	}
+	if len(cands) == 0 {
+		return "", "", "", errors.New("php-fpm not installed (missing /etc/php/*/fpm/pool.d)")
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].majorMinor[0] == cands[j].majorMinor[0] {
+			return cands[i].majorMinor[1] > cands[j].majorMinor[1]
+		}
+		return cands[i].majorMinor[0] > cands[j].majorMinor[0]
+	})
+	phpVersion = cands[0].ver
+	poolDir = filepath.Join("/etc/php", phpVersion, "fpm", "pool.d")
+	service = "php" + phpVersion + "-fpm"
+	return phpVersion, poolDir, service, nil
+}
+
+func (e *Executor) ensurePHPFPM(ctx context.Context, linuxUsername string) error {
+	_, poolDir, svc, err := e.detectPHPFPM()
+	if err != nil {
+		return err
+	}
+
+	poolName := "nebula-" + linuxUsername
+	socketPath := filepath.Join("/run/php", poolName+".sock")
+	poolPath := filepath.Join(poolDir, poolName+".conf")
+
+	cfg := fmt.Sprintf(`[%%s]
+user = %s
+group = %s
+
+listen = %s
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 10s
+pm.max_requests = 500
+
+php_admin_flag[log_errors] = on
+php_admin_value[error_log] = /home/%s/logs/php-fpm-error.log
+`, linuxUsername, linuxUsername, socketPath, linuxUsername)
+	cfg = fmt.Sprintf(cfg, poolName)
+
+	if err := e.writeFileAtomic(poolPath, []byte(cfg), 0o644); err != nil {
+		return err
+	}
+	// Reload PHP-FPM so the pool takes effect.
+	if err := e.runCommand(ctx, "systemctl", "reload", svc); err != nil {
+		// Some systems don't support reload; restart is safe here.
+		if err := e.runCommand(ctx, "systemctl", "restart", svc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Executor) nginxSiteName(domain string) string {
+	return "nebula-site-" + domain + ".conf"
+}
+
+func (e *Executor) nginxAvailablePath(domain string) string {
+	return filepath.Join("/etc/nginx/sites-available", e.nginxSiteName(domain))
+}
+
+func (e *Executor) nginxEnabledPath(domain string) string {
+	return filepath.Join("/etc/nginx/sites-enabled", e.nginxSiteName(domain))
+}
+
+func (e *Executor) writeNginxSiteConfig(domain, linuxUsername string, tlsEnabled bool) error {
+	if err := validate.ValidateLinuxUsername(linuxUsername); err != nil {
+		return err
+	}
+	normDomain, err := validate.NormalizeDomain(domain)
+	if err != nil {
+		return err
+	}
+	domain = normDomain
+
+	root := filepath.Join("/home", linuxUsername, "web", domain, "public_html")
+	socket := filepath.Join("/run/php", "nebula-"+linuxUsername+".sock")
+	acmeRoot := e.cfg.ACMEWebroot
+	sitePath := e.nginxAvailablePath(domain)
+
+	var conf string
+	if !tlsEnabled {
+		conf = fmt.Sprintf(`# Managed by Nebula Panel. Manual edits may be overwritten.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %s;
+
+    root %s;
+    index index.php index.html;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root %s;
+        default_type "text/plain";
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:%s;
+    }
+
+    location ~ /\\. {
+        deny all;
+    }
+}
+`, domain, root, acmeRoot, socket)
+	} else {
+		cert := filepath.Join("/etc/letsencrypt/live", domain, "fullchain.pem")
+		key := filepath.Join("/etc/letsencrypt/live", domain, "privkey.pem")
+		conf = fmt.Sprintf(`# Managed by Nebula Panel. Manual edits may be overwritten.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %s;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root %s;
+        default_type "text/plain";
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    root %s;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:%s;
+    }
+
+    location ~ /\\. {
+        deny all;
+    }
+}
+`, domain, acmeRoot, domain, cert, key, root, socket)
+	}
+
+	if err := e.writeFileAtomic(sitePath, []byte(conf), 0o644); err != nil {
+		return err
+	}
+
+	// Enable site (idempotent).
+	enabled := e.nginxEnabledPath(domain)
+	_ = os.Remove(enabled)
+	if err := os.Symlink(sitePath, enabled); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (e *Executor) disableNginxSite(domain string) error {
+	normDomain, err := validate.NormalizeDomain(domain)
+	if err != nil {
+		return err
+	}
+	domain = normDomain
+	_ = os.Remove(e.nginxEnabledPath(domain))
+	_ = os.Remove(e.nginxAvailablePath(domain))
+	return nil
+}
+
+func (e *Executor) writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func sqlQuoteLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+func (e *Executor) handleMariaDBCreate(ctx context.Context, t Task) error {
+	dbName := strings.ToLower(strings.TrimSpace(t.Args["db_name"]))
+	dbUser := strings.ToLower(strings.TrimSpace(t.Args["db_user"]))
+	dbPass := strings.TrimSpace(t.Args["db_password"])
+	if dbName == "" || dbUser == "" || dbPass == "" {
+		return errors.New("db_name, db_user, and db_password are required")
+	}
+	if err := validate.ValidateDBIdentifier(dbName); err != nil {
+		return err
+	}
+	if err := validate.ValidateDBIdentifier(dbUser); err != nil {
+		return err
+	}
+	sql := fmt.Sprintf(
+		"CREATE DATABASE IF NOT EXISTS `%s`;\n"+
+			"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s';\n"+
+			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\n"+
+			"FLUSH PRIVILEGES;\n",
+		dbName,
+		dbUser,
+		sqlQuoteLiteral(dbPass),
+		dbName,
+		dbUser,
+	)
+	return e.runCommand(ctx, "mysql", "-e", sql)
+}
+
+func (e *Executor) handleMariaDBDelete(ctx context.Context, t Task) error {
+	dbName := strings.ToLower(strings.TrimSpace(t.Args["db_name"]))
+	dbUser := strings.ToLower(strings.TrimSpace(t.Args["db_user"]))
+	if dbName == "" || dbUser == "" {
+		return errors.New("db_name and db_user are required")
+	}
+	if err := validate.ValidateDBIdentifier(dbName); err != nil {
+		return err
+	}
+	if err := validate.ValidateDBIdentifier(dbUser); err != nil {
+		return err
+	}
+	sql := fmt.Sprintf(
+		"DROP DATABASE IF EXISTS `%s`;\n"+
+			"DROP USER IF EXISTS '%s'@'localhost';\n"+
+			"FLUSH PRIVILEGES;\n",
+		dbName,
+		dbUser,
+	)
+	return e.runCommand(ctx, "mysql", "-e", sql)
+}
+
+func (e *Executor) pgQuery(ctx context.Context, query string) (string, error) {
+	ok, out, err := e.commandSucceeds(ctx, "runuser", "-u", "postgres", "--", "psql", "-tAc", query)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("psql query failed: %s", strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (e *Executor) handlePostgresCreate(ctx context.Context, t Task) error {
+	dbName := strings.ToLower(strings.TrimSpace(t.Args["db_name"]))
+	dbUser := strings.ToLower(strings.TrimSpace(t.Args["db_user"]))
+	dbPass := strings.TrimSpace(t.Args["db_password"])
+	if dbName == "" || dbUser == "" || dbPass == "" {
+		return errors.New("db_name, db_user, and db_password are required")
+	}
+	if err := validate.ValidateDBIdentifier(dbName); err != nil {
+		return err
+	}
+	if err := validate.ValidateDBIdentifier(dbUser); err != nil {
+		return err
+	}
+
+	roleExists, err := e.pgQuery(ctx, fmt.Sprintf("SELECT 1 FROM pg_roles WHERE rolname='%s'", sqlQuoteLiteral(dbUser)))
+	if err != nil {
+		return err
+	}
+	if roleExists != "1" {
+		if err := e.runCommand(ctx, "runuser", "-u", "postgres", "--", "psql", "-v", "ON_ERROR_STOP=1", "-c",
+			fmt.Sprintf("CREATE ROLE %s WITH LOGIN PASSWORD '%s';", dbUser, sqlQuoteLiteral(dbPass)),
+		); err != nil {
+			return err
+		}
+	}
+
+	dbExists, err := e.pgQuery(ctx, fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname='%s'", sqlQuoteLiteral(dbName)))
+	if err != nil {
+		return err
+	}
+	if dbExists != "1" {
+		if err := e.runCommand(ctx, "runuser", "-u", "postgres", "--", "psql", "-v", "ON_ERROR_STOP=1", "-c",
+			fmt.Sprintf("CREATE DATABASE %s OWNER %s;", dbName, dbUser),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Executor) handlePostgresDelete(ctx context.Context, t Task) error {
+	dbName := strings.ToLower(strings.TrimSpace(t.Args["db_name"]))
+	dbUser := strings.ToLower(strings.TrimSpace(t.Args["db_user"]))
+	if dbName == "" || dbUser == "" {
+		return errors.New("db_name and db_user are required")
+	}
+	if err := validate.ValidateDBIdentifier(dbName); err != nil {
+		return err
+	}
+	if err := validate.ValidateDBIdentifier(dbUser); err != nil {
+		return err
+	}
+	if err := e.runCommand(ctx, "runuser", "-u", "postgres", "--", "psql", "-v", "ON_ERROR_STOP=1", "-c",
+		fmt.Sprintf("DROP DATABASE IF EXISTS %s;", dbName),
+	); err != nil {
+		return err
+	}
+	if err := e.runCommand(ctx, "runuser", "-u", "postgres", "--", "psql", "-v", "ON_ERROR_STOP=1", "-c",
+		fmt.Sprintf("DROP ROLE IF EXISTS %s;", dbUser),
+	); err != nil {
+		return err
+	}
+	return nil
 }

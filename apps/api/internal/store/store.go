@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nebula-panel/nebula/apps/api/internal/config"
 	"github.com/nebula-panel/nebula/apps/api/internal/models"
+	"github.com/nebula-panel/nebula/packages/lib/secrets"
+	"github.com/nebula-panel/nebula/packages/lib/validate"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -67,10 +69,15 @@ func (s *Store) bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	adminID := "user_" + uuid.NewString()
+	linuxUsername, err := validate.LinuxUsernameFromUserID(adminID)
+	if err != nil {
+		return fmt.Errorf("bootstrap admin username: %w", err)
+	}
 	_, err = s.db.Exec(ctx, `
-		INSERT INTO users (id, email, role_id, password_hash)
-		VALUES ($1, $2, 'role_admin', $3)
-	`, "user_"+uuid.NewString(), s.cfg.AdminEmail, string(hash))
+		INSERT INTO users (id, email, role_id, password_hash, linux_username, sftp_enabled)
+		VALUES ($1, $2, 'role_admin', $3, $4, TRUE)
+	`, adminID, s.cfg.AdminEmail, string(hash), linuxUsername)
 	if err != nil {
 		return fmt.Errorf("bootstrap admin create: %w", err)
 	}
@@ -114,14 +121,14 @@ func randomSecret(n int) string {
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
-func encodeSecret(raw string) string {
-	return base64.StdEncoding.EncodeToString([]byte(raw))
+func (s *Store) encodeSecret(raw string) string {
+	return secrets.EncryptOrBase64(s.cfg.AppKey, raw)
 }
 
-func decodeSecret(enc string) string {
-	raw, err := base64.StdEncoding.DecodeString(enc)
+func (s *Store) decodeSecret(enc string) string {
+	pt, err := secrets.DecryptAuto(s.cfg.AppKey, enc)
 	if err != nil {
 		return ""
 	}
-	return string(raw)
+	return pt
 }

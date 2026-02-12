@@ -247,7 +247,7 @@ func (s *Store) CreateMailbox(domain, localPart, password string, quotaMB int) (
 		INSERT INTO mailboxes (id, mail_domain_id, local_part, quota_mb, password_enc)
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at
-	`, mb.ID, domainID, normLocal, mb.QuotaMB, encodeSecret(password)).Scan(&mb.CreatedAt)
+	`, mb.ID, domainID, normLocal, mb.QuotaMB, s.encodeSecret(password)).Scan(&mb.CreatedAt)
 	if err != nil {
 		return models.Mailbox{}, err
 	}
@@ -331,7 +331,7 @@ func (s *Store) ListMailboxes() ([]models.Mailbox, error) {
 		var passwordEnc string
 		if err := rows.Scan(&m.ID, &m.Domain, &localPart, &m.QuotaMB, &passwordEnc, &m.CreatedAt); err == nil {
 			m.Address = fmt.Sprintf("%s@%s", localPart, m.Domain)
-			m.Password = decodeSecret(passwordEnc)
+			m.Password = s.decodeSecret(passwordEnc)
 			out = append(out, m)
 		}
 	}

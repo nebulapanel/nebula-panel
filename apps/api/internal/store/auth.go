@@ -17,9 +17,9 @@ func (s *Store) CheckUserPassword(email, password string) (models.User, bool) {
 	var u models.User
 	var roleID string
 	err := s.db.QueryRow(ctx, `
-		SELECT id, email, role_id, password_hash, created_at
+		SELECT id, email, role_id, linux_username, sftp_enabled, password_hash, created_at
 		FROM users WHERE email=$1
-	`, email).Scan(&u.ID, &u.Email, &roleID, &u.PasswordHash, &u.CreatedAt)
+	`, email).Scan(&u.ID, &u.Email, &roleID, &u.LinuxUsername, &u.SFTPEnabled, &u.PasswordHash, &u.CreatedAt)
 	if err != nil {
 		return models.User{}, false
 	}

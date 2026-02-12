@@ -10,9 +10,13 @@ type Config struct {
 	HTTPAddr          string
 	DataRoot          string
 	DatabaseURL       string
+	AppKey            string
 	AgentSocket       string
 	AgentSharedSecret string
 	ACMEEmail         string
+	NS1FQDN           string
+	NS2FQDN           string
+	PublicIPv4        string
 	SessionTTL        time.Duration
 	AdminEmail        string
 	AdminPassword     string
@@ -25,9 +29,13 @@ func Load() Config {
 		HTTPAddr:          envOr("NEBULA_API_ADDR", ":8080"),
 		DataRoot:          envOr("NEBULA_DATA_ROOT", "/var/lib/nebula-panel"),
 		DatabaseURL:       envOr("NEBULA_DATABASE_URL", "postgres://nebula:nebula@127.0.0.1:5432/nebula?sslmode=disable"),
+		AppKey:            envOr("NEBULA_APP_KEY", ""),
 		AgentSocket:       envOr("NEBULA_AGENT_SOCKET", "/run/nebula-agent.sock"),
 		AgentSharedSecret: envOr("NEBULA_AGENT_SHARED_SECRET", "change-me-in-prod"),
 		ACMEEmail:         envOr("NEBULA_ACME_EMAIL", "admin@localhost"),
+		NS1FQDN:           envOr("NEBULA_NS1_FQDN", ""),
+		NS2FQDN:           envOr("NEBULA_NS2_FQDN", ""),
+		PublicIPv4:        envOr("NEBULA_PUBLIC_IPV4", ""),
 		SessionTTL:        envDurationOr("NEBULA_SESSION_TTL", 12*time.Hour),
 		AdminEmail:        envOr("NEBULA_ADMIN_EMAIL", "admin@localhost"),
 		AdminPassword:     envOr("NEBULA_ADMIN_PASSWORD", "admin123!"),

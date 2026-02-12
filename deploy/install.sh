@@ -31,6 +31,7 @@ install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl jq rsync ca-certificates unzip openssl git \
     ssl-cert \
+    openssh-server \
     nginx php-fpm mariadb-server postgresql redis-server \
     pdns-server pdns-backend-sqlite3 \
     postfix dovecot-core dovecot-imapd opendkim opendkim-tools \
@@ -102,6 +103,7 @@ build_binaries() {
 setup_user_dirs() {
   getent group nebula >/dev/null 2>&1 || groupadd --system nebula
   id -u nebula >/dev/null 2>&1 || useradd --system --home /var/lib/nebula-panel --shell /usr/sbin/nologin --gid nebula nebula
+  getent group nebula-sftp >/dev/null 2>&1 || groupadd --system nebula-sftp
   mkdir -p /etc/nebula-panel /var/lib/nebula-panel /var/log/nebula-panel /var/backups/nebula-panel
   chown -R nebula:nebula /var/lib/nebula-panel /var/log/nebula-panel
 
@@ -123,16 +125,22 @@ setup_secrets() {
     local db_password
     local pdns_key
     local agent_secret
+    local app_key
+    local public_ipv4
     db_password="$(openssl rand -hex 18)"
     pdns_key="$(openssl rand -hex 24)"
     agent_secret="$(openssl rand -hex 32)"
+    app_key="$(openssl rand -hex 32)"
+    public_ipv4="$(curl -fsSL https://api.ipify.org || true)"
     umask 077
     cat > "${SECRETS_FILE}" <<SECRETS
 NEBULA_API_ADDR=:8080
 NEBULA_DATA_ROOT=/var/lib/nebula-panel
 NEBULA_DATABASE_URL=postgres://nebula:${db_password}@127.0.0.1:5432/nebula?sslmode=disable
+NEBULA_APP_KEY=${app_key}
 NEBULA_AGENT_SOCKET=/run/nebula-agent.sock
 NEBULA_AGENT_SHARED_SECRET=${agent_secret}
+NEBULA_AGENT_CMD_TIMEOUT=10m
 NEBULA_ADMIN_EMAIL=admin@localhost
 NEBULA_ADMIN_PASSWORD=$(openssl rand -base64 18)
 NEBULA_ADMIN_TOTP_CODE=000000
@@ -143,6 +151,9 @@ NEBULA_ZEROSSL_EAB_HMAC_KEY=
 NEBULA_PDNS_API_URL=http://127.0.0.1:8081
 NEBULA_PDNS_API_KEY=${pdns_key}
 NEBULA_PDNS_SERVER_ID=localhost
+NEBULA_NS1_FQDN=
+NEBULA_NS2_FQDN=
+NEBULA_PUBLIC_IPV4=${public_ipv4}
 NEBULA_GENERATED_CONFIG_DIR=/etc/nebula-panel/generated
 NEBULA_SESSION_TTL=12h
 NEBULA_AGENT_DRY_RUN=false
@@ -155,6 +166,23 @@ SECRETS
     chmod 600 "${SECRETS_FILE}"
     echo "Created ${SECRETS_FILE}. Update NEBULA_ADMIN_TOTP_CODE before production use."
   fi
+}
+
+setup_sftp_jail() {
+  mkdir -p /etc/ssh/sshd_config.d
+  cat > /etc/ssh/sshd_config.d/nebula-sftp.conf <<'EOF'
+# Managed by Nebula Panel. Members of nebula-sftp are jailed to /home/%u with SFTP only.
+Match Group nebula-sftp
+  ChrootDirectory /home/%u
+  ForceCommand internal-sftp
+  AllowTcpForwarding no
+  X11Forwarding no
+  PermitTunnel no
+EOF
+  if command -v sshd >/dev/null 2>&1; then
+    sshd -t
+  fi
+  systemctl reload ssh >/dev/null 2>&1 || systemctl restart ssh >/dev/null 2>&1 || true
 }
 
 setup_postgres() {
@@ -242,7 +270,7 @@ Next steps:
 2. Open the panel in a browser: http://<your-server-ip>/
 3. (Recommended) Set a real domain by editing /etc/nginx/sites-available/nebula-panel.conf and reloading nginx.
 4. Set NEBULA_PDNS_API_KEY and ACME/ZeroSSL values as needed.
-5. Configure DNS glue records for ns1/ns2 to this server IP.
+5. (Optional) Set NEBULA_NS1_FQDN / NEBULA_NS2_FQDN and configure glue if you run your own nameservers.
 6. Restart Nebula services:
    systemctl restart nebula-agent nebula-api nebula-worker nebula-web
 MSG
@@ -254,6 +282,7 @@ ensure_go_toolchain
 build_binaries
 setup_user_dirs
 setup_secrets
+setup_sftp_jail
 setup_postgres
 setup_runtime_dirs
 install_code

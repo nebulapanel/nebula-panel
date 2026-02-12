@@ -1,8 +1,8 @@
 package http
 
 import (
+	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,17 +21,16 @@ import (
 	"github.com/nebula-panel/nebula/apps/api/internal/models"
 	"github.com/nebula-panel/nebula/apps/api/internal/security"
 	"github.com/nebula-panel/nebula/apps/api/internal/store"
-	"github.com/nebula-panel/nebula/apps/api/internal/tasks"
+	"github.com/nebula-panel/nebula/packages/lib/validate"
 )
 
 type Server struct {
-	cfg   config.Config
-	st    *store.Store
-	tasks *tasks.Client
+	cfg config.Config
+	st  *store.Store
 }
 
 func NewServer(cfg config.Config, st *store.Store) *Server {
-	return &Server{cfg: cfg, st: st, tasks: tasks.New(cfg.AgentSocket, cfg.AgentSharedSecret)}
+	return &Server{cfg: cfg, st: st}
 }
 
 func (s *Server) Router() http.Handler {
@@ -54,16 +53,21 @@ func (s *Server) Router() http.Handler {
 			r.Use(apimw.RequireSession(s.st))
 			r.Use(s.csrfMiddleware)
 
+			r.Get("/auth/me", s.handleAuthMe)
+
 			r.Post("/users", s.handleCreateUser)
 			r.Get("/users", s.handleListUsers)
+			r.Post("/users/{id}/sftp/rotate-password", s.handleRotateSFTPPassword)
 			r.Patch("/users/{id}", s.handleUpdateUser)
 			r.Delete("/users/{id}", s.handleDeleteUser)
 
 			r.Post("/sites", s.handleCreateSite)
+			r.Get("/sites", s.handleListSites)
 			r.Get("/sites/{id}", s.handleGetSite)
 			r.Delete("/sites/{id}", s.handleDeleteSite)
 
 			r.Post("/sites/{id}/databases", s.handleCreateDB)
+			r.Get("/sites/{id}/databases", s.handleListDBs)
 			r.Delete("/databases/{id}", s.handleDeleteDB)
 
 			r.Post("/sites/{id}/ssl/issue", s.handleIssueSSL)
@@ -95,7 +99,9 @@ func (s *Server) Router() http.Handler {
 			r.Get("/backups", s.handleBackupList)
 			r.Post("/backups/{id}/restore", s.handleBackupRestore)
 
+			r.Get("/jobs", s.handleListJobs)
 			r.Get("/jobs/{id}", s.handleGetJob)
+			r.Get("/jobs/{id}/events", s.handleJobEvents)
 			r.Get("/audit-logs", s.handleAuditLogs)
 		})
 	})
@@ -231,6 +237,20 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNoContent, nil)
 }
 
+func (s *Server) handleAuthMe(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	u, ok := s.st.GetUser(sess.UserID)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
+}
+
 func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.requireAdmin(w, r)
 	if !ok {
@@ -253,8 +273,21 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// Provision Linux user + SFTP credentials asynchronously.
+	sftpPassword := randomPassword(18)
+	if err := s.st.SetUserSFTPSecret(u.ID, sftpPassword); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	job := s.st.CreateJob("user_provision", u.ID, "queued")
+
 	s.st.AddAudit(sess.UserID, "create_user", u.ID, "Created user account")
-	writeJSON(w, http.StatusCreated, u)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"user":               u,
+		"job":                job,
+		"sftp_password_once": sftpPassword,
+	})
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -262,6 +295,33 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"users": s.st.ListUsers()})
+}
+
+func (s *Server) handleRotateSFTPPassword(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.requireAdmin(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "id")
+	u, ok := s.st.GetUser(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
+
+	sftpPassword := randomPassword(18)
+	if err := s.st.SetUserSFTPSecret(id, sftpPassword); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	job := s.st.CreateJob("user_rotate_password", id, "queued")
+	s.st.AddAudit(sess.UserID, "rotate_sftp_password", id, "Rotated SFTP password")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user":               u,
+		"job":                job,
+		"sftp_password_once": sftpPassword,
+	})
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -317,14 +377,21 @@ func (s *Server) handleCreateSite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.st.CreateJob("site_create", site.ID, "queued")
-	if err := s.tasks.Submit(r.Context(), tasks.Request{Type: "site_create", Target: site.ID, Args: map[string]string{"domain": site.Domain, "owner_id": site.OwnerID}}); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "site provisioned")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "create_site", site.ID, fmt.Sprintf("Created site for domain %s", site.Domain))
 	writeJSON(w, http.StatusCreated, map[string]any{"site": site, "job": job})
+}
+
+func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
+	sess, err := s.currentSession(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if sess.Role == models.RoleAdmin {
+		writeJSON(w, http.StatusOK, map[string]any{"sites": s.st.ListSites()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sites": s.st.ListSitesForOwner(sess.UserID)})
 }
 
 func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
@@ -342,14 +409,11 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	job := s.st.CreateJob("site_delete", id, "queued")
-	if err := s.tasks.Submit(r.Context(), tasks.Request{Type: "site_delete", Target: id}); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "site deleted")
-		s.st.DeleteSite(id)
+	if _, ok := s.st.GetSite(id); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "site not found"})
+		return
 	}
-	job, _ = s.st.GetJob(job.ID)
+	job := s.st.CreateJob("site_delete", id, "queued")
 	s.st.AddAudit(sess.UserID, "delete_site", id, "Deleted site")
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
@@ -368,13 +432,56 @@ func (s *Server) handleCreateDB(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	db, err := s.st.CreateDatabase(chi.URLParam(r, "id"), req.Engine, req.Name, req.Username)
+
+	engine := strings.ToLower(strings.TrimSpace(req.Engine))
+	switch engine {
+	case "", "mariadb", "mysql":
+		engine = "mariadb"
+	case "postgres", "postgresql":
+		engine = "postgres"
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "engine must be mariadb or postgres"})
+		return
+	}
+
+	dbName := strings.ToLower(strings.TrimSpace(req.Name))
+	dbUser := strings.ToLower(strings.TrimSpace(req.Username))
+	if dbUser == "" {
+		dbUser = dbName
+	}
+	if err := validate.ValidateDBIdentifier(dbName); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validate.ValidateDBIdentifier(dbUser); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	db, password, err := s.st.CreateDatabase(chi.URLParam(r, "id"), engine, dbName, dbUser)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	job := s.st.CreateJob("db_create", db.ID, "queued")
 	s.st.AddAudit(sess.UserID, "create_database", db.ID, "Created database")
-	writeJSON(w, http.StatusCreated, db)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"database":           db,
+		"job":                job,
+		"generated_password": password,
+	})
+}
+
+func (s *Server) handleListDBs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireAdmin(w, r); !ok {
+		return
+	}
+	siteID := chi.URLParam(r, "id")
+	if _, ok := s.st.GetSite(siteID); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "site not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"databases": s.st.ListDatabases(siteID)})
 }
 
 func (s *Server) handleDeleteDB(w http.ResponseWriter, r *http.Request) {
@@ -383,9 +490,13 @@ func (s *Server) handleDeleteDB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	s.st.DeleteDatabase(id)
+	if !s.st.DatabaseExists(id) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "database not found"})
+		return
+	}
+	job := s.st.CreateJob("db_delete", id, "queued")
 	s.st.AddAudit(sess.UserID, "delete_database", id, "Deleted database")
-	writeJSON(w, http.StatusNoContent, nil)
+	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
 
 func (s *Server) handleIssueSSL(w http.ResponseWriter, r *http.Request) {
@@ -402,43 +513,12 @@ func (s *Server) handleSSLTask(w http.ResponseWriter, r *http.Request, taskType,
 		return
 	}
 	siteID := chi.URLParam(r, "id")
-	site, ok := s.st.GetSite(siteID)
-	if !ok {
+	if _, ok := s.st.GetSite(siteID); !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "site not found"})
 		return
 	}
+	_ = endStatus // reserved for future worker-side messaging
 	job := s.st.CreateJob(taskType, siteID, "queued")
-	err := s.tasks.Submit(r.Context(), tasks.Request{
-		Type:   taskType,
-		Target: siteID,
-		Args: map[string]string{
-			"provider": "letsencrypt",
-			"domain":   site.Domain,
-			"email":    s.cfg.ACMEEmail,
-		},
-	})
-	if err == nil {
-		s.st.UpdateJobStatus(job.ID, "done", endStatus)
-		s.st.SetSSLStatus(siteID, "letsencrypt", "active", "", time.Now().UTC().Add(85*24*time.Hour))
-	} else {
-		fallbackErr := s.tasks.Submit(r.Context(), tasks.Request{
-			Type:   taskType,
-			Target: siteID,
-			Args: map[string]string{
-				"provider": "zerossl",
-				"domain":   site.Domain,
-				"email":    s.cfg.ACMEEmail,
-			},
-		})
-		if fallbackErr != nil {
-			s.st.UpdateJobStatus(job.ID, "failed", "letsencrypt: "+err.Error()+"; zerossl: "+fallbackErr.Error())
-			s.st.SetSSLStatus(siteID, "zerossl", "failed", fallbackErr.Error(), time.Time{})
-		} else {
-			s.st.UpdateJobStatus(job.ID, "done", endStatus+" via zerossl fallback")
-			s.st.SetSSLStatus(siteID, "zerossl", "active", "", time.Now().UTC().Add(85*24*time.Hour))
-		}
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, taskType, siteID, "Triggered SSL workflow")
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
@@ -464,19 +544,36 @@ func (s *Server) handleCreateZone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "zone is required"})
 		return
 	}
+	zone, err := validate.NormalizeDomain(req.Zone)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	ns1 := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.cfg.NS1FQDN)), ".")
+	ns2 := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s.cfg.NS2FQDN)), ".")
+	if ns1 == "" {
+		ns1 = "ns1." + zone
+	}
+	if ns2 == "" {
+		ns2 = "ns2." + zone
+	}
+
 	records := []models.DNSRecord{
-		{ID: "r_" + uuid.NewString(), Type: "NS", Name: req.Zone, Value: "ns1." + req.Zone, TTL: 3600},
-		{ID: "r_" + uuid.NewString(), Type: "NS", Name: req.Zone, Value: "ns2." + req.Zone, TTL: 3600},
+		{ID: "r_" + uuid.NewString(), Type: "NS", Name: zone, Value: ns1, TTL: 3600},
+		{ID: "r_" + uuid.NewString(), Type: "NS", Name: zone, Value: ns2, TTL: 3600},
 	}
-	z := s.st.CreateZone(req.Zone, records)
-	job := s.st.CreateJob("dns_apply", req.Zone, "queued")
-	if err := s.submitDNSApply(r, z); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "zone applied")
+	if ip := strings.TrimSpace(s.cfg.PublicIPv4); ip != "" {
+		if strings.HasSuffix(ns1, "."+zone) {
+			records = append(records, models.DNSRecord{ID: "r_" + uuid.NewString(), Type: "A", Name: ns1, Value: ip, TTL: 3600})
+		}
+		if strings.HasSuffix(ns2, "."+zone) {
+			records = append(records, models.DNSRecord{ID: "r_" + uuid.NewString(), Type: "A", Name: ns2, Value: ip, TTL: 3600})
+		}
 	}
-	job, _ = s.st.GetJob(job.ID)
-	s.st.AddAudit(sess.UserID, "create_dns_zone", req.Zone, "Created DNS zone")
+
+	z := s.st.CreateZone(zone, records)
+	job := s.st.CreateJob("dns_apply", zone, "queued")
+	s.st.AddAudit(sess.UserID, "create_dns_zone", zone, "Created DNS zone")
 	writeJSON(w, http.StatusCreated, map[string]any{"zone": z, "job": job})
 }
 
@@ -512,12 +609,6 @@ func (s *Server) handleReplaceZoneRecords(w http.ResponseWriter, r *http.Request
 		return
 	}
 	job := s.st.CreateJob("dns_apply", z.Zone, "queued")
-	if err := s.submitDNSApply(r, z); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "zone applied")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "replace_dns_records", z.Zone, "Replaced DNS records")
 	writeJSON(w, http.StatusOK, map[string]any{"zone": z, "job": job})
 }
@@ -533,12 +624,6 @@ func (s *Server) handleDeleteZoneRecord(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	job := s.st.CreateJob("dns_apply", z.Zone, "queued")
-	if err := s.submitDNSApply(r, z); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "zone applied")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "delete_dns_record", z.Zone, "Deleted DNS record")
 	writeJSON(w, http.StatusOK, map[string]any{"zone": z, "job": job})
 }
@@ -721,13 +806,7 @@ func (s *Server) handleCreateMailDomain(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	job := s.st.CreateJob("mail_apply", req.Domain, "queued")
-	if err := s.submitMailApply(r); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "mail config regenerated")
-	}
-	job, _ = s.st.GetJob(job.ID)
+	job := s.st.CreateJob("mail_apply", "mail", "queued")
 	s.st.AddAudit(sess.UserID, "create_mail_domain", req.Domain, "Created mail domain")
 	writeJSON(w, http.StatusCreated, map[string]any{"domain": domain, "job": job})
 }
@@ -758,12 +837,6 @@ func (s *Server) handleCreateMailbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := s.st.CreateJob("mail_apply", "mail", "queued")
-	if err := s.submitMailApply(r); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "mail config regenerated")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "create_mailbox", mb.ID, "Created mailbox")
 	writeJSON(w, http.StatusCreated, map[string]any{"mailbox": mb, "job": job, "generated_password": req.Password})
 }
@@ -788,12 +861,6 @@ func (s *Server) handleCreateAlias(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := s.st.CreateJob("mail_apply", "mail", "queued")
-	if err := s.submitMailApply(r); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "mail config regenerated")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "create_alias", a.ID, "Created alias")
 	writeJSON(w, http.StatusCreated, map[string]any{"alias": a, "job": job})
 }
@@ -806,12 +873,6 @@ func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	s.st.DeleteMailbox(id)
 	job := s.st.CreateJob("mail_apply", "mail", "queued")
-	if err := s.submitMailApply(r); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "mail config regenerated")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "delete_mailbox", id, "Deleted mailbox")
 	writeJSON(w, http.StatusOK, map[string]any{"job": job})
 }
@@ -907,12 +968,6 @@ func (s *Server) handleBackupRun(w http.ResponseWriter, r *http.Request) {
 	}
 	b := s.st.CreateBackup(req.Scope)
 	job := s.st.CreateJob("backup_run", b.ID, "queued")
-	if err := s.tasks.Submit(r.Context(), tasks.Request{Type: "backup_run", Target: b.ID, Args: map[string]string{"scope": req.Scope}}); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "backup completed")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "backup_run", b.ID, "Triggered backup")
 	writeJSON(w, http.StatusAccepted, map[string]any{"backup": b, "job": job})
 }
@@ -932,12 +987,6 @@ func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job := s.st.CreateJob("backup_restore", id, "queued")
-	if err := s.tasks.Submit(r.Context(), tasks.Request{Type: "backup_restore", Target: id}); err != nil {
-		s.st.UpdateJobStatus(job.ID, "failed", err.Error())
-	} else {
-		s.st.UpdateJobStatus(job.ID, "done", "backup restored")
-	}
-	job, _ = s.st.GetJob(job.ID)
 	s.st.AddAudit(sess.UserID, "backup_restore", id, "Triggered restore")
 	writeJSON(w, http.StatusAccepted, map[string]any{"job": job})
 }
@@ -951,6 +1000,25 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": s.st.ListJobs(limit)})
+}
+
+func (s *Server) handleJobEvents(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if _, ok := s.st.GetJob(id); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": s.st.ListJobEvents(id)})
+}
+
 func (s *Server) handleAuditLogs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"logs": s.st.ListAudit()})
 }
@@ -959,53 +1027,8 @@ func (s *Server) userRoot(sess models.Session) string {
 	return filepath.Join(s.cfg.DataRoot, "users", sess.UserID)
 }
 
-func (s *Server) submitDNSApply(r *http.Request, zone models.DNSZone) error {
-	recordsJSON, err := json.Marshal(zone.Records)
-	if err != nil {
-		return err
-	}
-	return s.tasks.Submit(r.Context(), tasks.Request{
-		Type:   "dns_apply",
-		Target: zone.Zone,
-		Args: map[string]string{
-			"zone":         zone.Zone,
-			"records_json": string(recordsJSON),
-		},
-	})
-}
-
-func (s *Server) submitMailApply(r *http.Request) error {
-	domains, err := s.st.ListMailDomains()
-	if err != nil {
-		return err
-	}
-	mailboxes, err := s.st.ListMailboxes()
-	if err != nil {
-		return err
-	}
-	aliases, err := s.st.ListAliases()
-	if err != nil {
-		return err
-	}
-	domainsJSON, err := json.Marshal(domains)
-	if err != nil {
-		return err
-	}
-	mailboxesJSON, err := json.Marshal(mailboxes)
-	if err != nil {
-		return err
-	}
-	aliasesJSON, err := json.Marshal(aliases)
-	if err != nil {
-		return err
-	}
-	return s.tasks.Submit(r.Context(), tasks.Request{
-		Type:   "mail_apply",
-		Target: "mail",
-		Args: map[string]string{
-			"domains_json":   string(domainsJSON),
-			"mailboxes_json": string(mailboxesJSON),
-			"aliases_json":   string(aliasesJSON),
-		},
-	})
+func randomPassword(nBytes int) string {
+	buf := make([]byte, nBytes)
+	_, _ = rand.Read(buf)
+	return base64.RawURLEncoding.EncodeToString(buf)
 }

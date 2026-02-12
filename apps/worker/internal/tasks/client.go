@@ -34,7 +34,8 @@ func New(socketPath, secret string) *Client {
 	}
 	return &Client{
 		hc: &http.Client{
-			Timeout:   6 * time.Second,
+			// Long-running tasks (certbot, backups) can take minutes.
+			Timeout:   15 * time.Minute,
 			Transport: transport,
 		},
 		secret: secret,
