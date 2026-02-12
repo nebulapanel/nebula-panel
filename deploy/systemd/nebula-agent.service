@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=root
+Group=nebula
 EnvironmentFile=-/etc/nebula-panel/secrets.env
 ExecStart=/usr/local/bin/nebula-agent
 Restart=always

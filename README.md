@@ -48,6 +48,8 @@ After install:
    - `sudo systemctl restart nebula-agent nebula-api nebula-worker nebula-web nginx`
 3. Verify:
    - `curl -s http://127.0.0.1:8080/healthz`
+4. Open:
+   - `http://<your-server-ip>/`
 
 ## Operations Docs
 

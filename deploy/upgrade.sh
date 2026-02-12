@@ -86,6 +86,12 @@ install -m 755 "${ROOT_DIR}/bin/nebula-api" /usr/local/bin/nebula-api
 install -m 755 "${ROOT_DIR}/bin/nebula-agent" /usr/local/bin/nebula-agent
 install -m 755 "${ROOT_DIR}/bin/nebula-worker" /usr/local/bin/nebula-worker
 
+# Refresh Nebula systemd units (safe to overwrite; keeps upgrades consistent).
+install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-agent.service" /etc/systemd/system/nebula-agent.service
+install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-api.service" /etc/systemd/system/nebula-api.service
+install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-worker.service" /etc/systemd/system/nebula-worker.service
+install -m 644 "${ROOT_DIR}/deploy/systemd/nebula-web.service" /etc/systemd/system/nebula-web.service
+
 rsync -a --delete --exclude '.git' --exclude 'node_modules' "${ROOT_DIR}/" "${INSTALL_DIR}/"
 
 cd "${INSTALL_DIR}/apps/web"

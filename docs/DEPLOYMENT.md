@@ -61,6 +61,9 @@ curl -s http://127.0.0.1:8080/healthz
 sudo bash /opt/src/Nebula/scripts/verify-stack.sh
 ```
 
+Panel URL (default):
+- `http://<your-server-ip>/`
+
 ## 5) DNS + SSL Go-Live
 
 - Create glue records:

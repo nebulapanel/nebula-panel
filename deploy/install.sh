@@ -30,6 +30,7 @@ install_packages() {
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl jq rsync ca-certificates unzip openssl git \
+    ssl-cert \
     nginx php-fpm mariadb-server postgresql redis-server \
     pdns-server pdns-backend-sqlite3 \
     postfix dovecot-core dovecot-imapd opendkim opendkim-tools \
@@ -99,9 +100,22 @@ build_binaries() {
 }
 
 setup_user_dirs() {
-  id -u nebula >/dev/null 2>&1 || useradd --system --home /var/lib/nebula-panel --shell /usr/sbin/nologin nebula
+  getent group nebula >/dev/null 2>&1 || groupadd --system nebula
+  id -u nebula >/dev/null 2>&1 || useradd --system --home /var/lib/nebula-panel --shell /usr/sbin/nologin --gid nebula nebula
   mkdir -p /etc/nebula-panel /var/lib/nebula-panel /var/log/nebula-panel /var/backups/nebula-panel
   chown -R nebula:nebula /var/lib/nebula-panel /var/log/nebula-panel
+
+  # Minimal mail prerequisites so Postfix/Dovecot can start out-of-the-box.
+  getent group vmail >/dev/null 2>&1 || groupadd --system vmail
+  id -u vmail >/dev/null 2>&1 || useradd --system --home /var/mail/vhosts --shell /usr/sbin/nologin --gid vmail vmail
+  mkdir -p /var/mail/vhosts
+  chown -R vmail:vmail /var/mail/vhosts
+  touch /etc/dovecot/nebula-users
+  chmod 600 /etc/dovecot/nebula-users
+
+  if [[ ! -f /etc/mailname ]]; then
+    hostname -f > /etc/mailname || echo "mail.local" > /etc/mailname
+  fi
 }
 
 setup_secrets() {
@@ -194,6 +208,7 @@ install_code() {
 install_templates() {
   install -m 644 "${ROOT_DIR}/deploy/templates/nginx-nebula.conf" /etc/nginx/sites-available/nebula-panel.conf
   ln -sf /etc/nginx/sites-available/nebula-panel.conf /etc/nginx/sites-enabled/nebula-panel.conf
+  rm -f /etc/nginx/sites-enabled/default >/dev/null 2>&1 || true
 
   install -m 644 "${ROOT_DIR}/deploy/templates/postfix-main.cf" /etc/postfix/main.cf
   install -m 644 "${ROOT_DIR}/deploy/templates/dovecot.conf" /etc/dovecot/dovecot.conf
@@ -202,6 +217,9 @@ install_templates() {
 
   source "${SECRETS_FILE}"
   sed -i "s#api-key=.*#api-key=${NEBULA_PDNS_API_KEY}#g" /etc/powerdns/pdns.conf
+
+  nginx -t
+  systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx
 }
 
 install_systemd() {
@@ -221,10 +239,11 @@ Nebula Panel installed.
 
 Next steps:
 1. Edit ${SECRETS_FILE} and set real admin email/password/TOTP.
-2. Replace panel.local in nginx template with your domain and reload nginx.
-3. Set NEBULA_PDNS_API_KEY and ACME/ZeroSSL values as needed.
-4. Configure DNS glue records for ns1/ns2 to this server IP.
-5. Restart Nebula services:
+2. Open the panel in a browser: http://<your-server-ip>/
+3. (Recommended) Set a real domain by editing /etc/nginx/sites-available/nebula-panel.conf and reloading nginx.
+4. Set NEBULA_PDNS_API_KEY and ACME/ZeroSSL values as needed.
+5. Configure DNS glue records for ns1/ns2 to this server IP.
+6. Restart Nebula services:
    systemctl restart nebula-agent nebula-api nebula-worker nebula-web
 MSG
 }
